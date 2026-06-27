@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 .venv/
 config.local.toml
+.DS_Store
