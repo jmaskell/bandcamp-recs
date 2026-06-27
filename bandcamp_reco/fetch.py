@@ -56,6 +56,7 @@ class Fetcher:
                 self._backoff(attempt)
                 continue
             if 500 <= resp.status_code < 600:
+                self._consecutive_429 = 0
                 self._backoff(attempt)
                 continue
             self._consecutive_429 = 0
