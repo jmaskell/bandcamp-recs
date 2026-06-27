@@ -5,6 +5,8 @@ from bs4 import BeautifulSoup
 from .collection import parse_pagedata_blob
 from .models import Album
 
+THUMBS_API = "https://bandcamp.com/api/tralbumcollectors/2/thumbs"
+
 
 @dataclass
 class AlbumPageInfo:
@@ -15,10 +17,15 @@ class AlbumPageInfo:
 
 def parse_album_page(html: str) -> AlbumPageInfo:
     blob = parse_pagedata_blob(html)
-    tralbum_id = blob.get("tralbum_id") or blob.get("id")
+    # Live site uses 'album_id' at the top level as the numeric tralbum id.
+    # Fall back to 'tralbum_id' / 'id' for backwards compatibility.
+    tralbum_id = blob.get("album_id") or blob.get("tralbum_id") or blob.get("id")
     if tralbum_id is not None:
         tralbum_id = str(tralbum_id)
 
+    # Supporters are no longer embedded in the page data-blob on the live site;
+    # they are fetched via the tralbumcollectors thumbs API in get_supporters().
+    # Keep this loop so fixture-based tests and any future page changes still work.
     supporters = []
     for s in blob.get("supporters") or []:
         name = s.get("username") or s.get("name")
@@ -41,7 +48,7 @@ def get_album_page(album: Album, fetcher, cache) -> AlbumPageInfo:
         return AlbumPageInfo(
             tralbum_id=cached["tralbum_id"],
             tags=tuple(cached["tags"]),
-            supporter_usernames=list(cached["supporter_usernames"]),
+            supporter_usernames=list(cached.get("supporter_usernames", [])),
         )
     html = fetcher.get(album.url).text
     info = parse_album_page(html)
@@ -55,4 +62,21 @@ def get_album_page(album: Album, fetcher, cache) -> AlbumPageInfo:
 
 def get_supporters(album: Album, fetcher, cache, limit: int) -> list[str]:
     info = get_album_page(album, fetcher, cache)
-    return info.supporter_usernames[:limit]
+    # If the page embed included supporters (legacy path), use them directly.
+    if info.supporter_usernames:
+        return info.supporter_usernames[:limit]
+    # Otherwise fetch from the tralbumcollectors thumbs API.
+    if not info.tralbum_id:
+        return []
+    cached = cache.get("supporters", album.url)
+    if cached is not None:
+        return cached[:limit]
+    resp = fetcher.post_json(
+        THUMBS_API,
+        {"tralbum_type": "a", "tralbum_id": int(info.tralbum_id), "count": limit},
+    )
+    usernames = [
+        r["username"] for r in (resp.get("results") or []) if r.get("username")
+    ]
+    cache.set("supporters", album.url, usernames)
+    return usernames[:limit]
