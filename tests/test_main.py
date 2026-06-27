@@ -78,3 +78,62 @@ def test_run_skips_failing_album_in_supporters_loop(tmp_path, monkeypatch):
     # run must complete and produce recommendations from the surviving album
     assert (tmp_path / "out.html").exists()
     assert any(r.album.url == "https://cand/y" for r in recs)
+
+
+def test_owned_albums_excluded_even_beyond_limit(tmp_path, monkeypatch):
+    """--limit bounds the supporter crawl but must NOT shrink the owned-exclusion set.
+
+    Regression: with --limit N, owned_keys was built from only the first N owned
+    albums, so the user's other owned albums leaked back in as recommendations.
+    """
+    owned = [_album("https://own/1"), _album("https://own/2"), _album("https://own/3")]
+
+    def fake_get_collection(username, fetcher, cache, max_items=None):
+        if username == "me":
+            result = owned
+        else:
+            # fan1 owns own/2 (an owned album BEYOND limit=1) plus a real candidate
+            result = [_album("https://own/2"), _album("https://cand/x")]
+        return result[:max_items] if max_items is not None else result
+
+    monkeypatch.setattr(main_mod, "get_collection", fake_get_collection)
+    monkeypatch.setattr(fans_mod, "get_collection", fake_get_collection)
+    monkeypatch.setattr(main_mod, "get_supporters",
+                        lambda album, fetcher, cache, limit: ["fan1"])
+    monkeypatch.setattr(main_mod, "get_album_page",
+                        lambda album, fetcher, cache: type(
+                            "I", (), {"tralbum_id": "1", "tags": (),
+                                      "supporter_usernames": []})())
+
+    cfg = _cfg(tmp_path)
+    recs = main_mod.run(cfg, fetcher=None, cache=None, limit=1)
+    rec_urls = {r.album.url for r in recs}
+    assert "https://own/2" not in rec_urls  # owned — excluded despite limit=1
+    assert "https://cand/x" in rec_urls
+
+
+def test_user_not_sampled_as_their_own_fan(tmp_path, monkeypatch):
+    """The user supports their own albums; they must not be fetched as a fan."""
+    owned = [_album("https://own/1"), _album("https://own/2")]
+    calls = []
+
+    def fake_get_collection(username, fetcher, cache, max_items=None):
+        calls.append(username)
+        if username == "me":
+            return owned
+        return [_album("https://cand/x")]
+
+    monkeypatch.setattr(main_mod, "get_collection", fake_get_collection)
+    monkeypatch.setattr(fans_mod, "get_collection", fake_get_collection)
+    # the user "me" appears among the supporters of their own album
+    monkeypatch.setattr(main_mod, "get_supporters",
+                        lambda album, fetcher, cache, limit: ["me", "fan1"])
+    monkeypatch.setattr(main_mod, "get_album_page",
+                        lambda album, fetcher, cache: type(
+                            "I", (), {"tralbum_id": "1", "tags": (),
+                                      "supporter_usernames": []})())
+
+    cfg = _cfg(tmp_path)
+    main_mod.run(cfg, fetcher=None, cache=None)
+    # "me" is fetched once as the owner, never again as a sampled fan
+    assert calls.count("me") == 1

@@ -10,12 +10,12 @@ yours, and ranks albums they own that you don't — output as a browsable HTML p
 ## Usage
 
     python recommend.py                 # full run, uses config.toml
-    python recommend.py --limit 5       # quick dry run (cap owned albums)
+    python recommend.py --limit 5       # faster sample (crawl 5 albums' fans)
     python recommend.py --top-n 100     # render more recommendations
 
 Open `recommendations.html` in your browser when it finishes.
 
-**Note:** `--limit` is a dry-run sample — because it truncates your owned set, results may include albums you actually own and affinity scores are understated. Full runs (no `--limit`) give true recommendations.
+**Note:** `--limit N` is a faster sample — it only crawls the supporters of your first `N` owned albums, so results are narrower (and less personalized) than a full run. It does **not** affect exclusion: your entire collection is always filtered out of the recommendations either way. Run with no `--limit` for the full, richest results.
 
 ## Config
 

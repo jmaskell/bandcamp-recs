@@ -14,14 +14,19 @@ from .supporters import get_supporters, get_album_page
 
 def run(config, fetcher, cache, limit=None):
     try:
-        owned = get_collection(config.username, fetcher, cache, max_items=limit)
+        owned = get_collection(config.username, fetcher, cache)
     except CircuitBreakerTripped:
         owned = []
     owned_keys = {album_key(a) for a in owned}
 
-    # collect candidate supporters across owned albums
+    # --limit bounds only the (expensive) supporter crawl, NOT the exclusion
+    # set above. Truncating owned_keys would let albums you own leak back in
+    # as recommendations.
+    crawl_albums = owned if limit is None else owned[:limit]
+
+    # collect candidate supporters across the crawled owned albums
     supporter_usernames = []
-    for album in owned:
+    for album in crawl_albums:
         try:
             supporter_usernames.extend(
                 get_supporters(album, fetcher, cache,
@@ -31,6 +36,10 @@ def run(config, fetcher, cache, limit=None):
             break
         except Exception:
             continue
+
+    # You are a supporter of your own albums; never sample yourself as a fan
+    # (your collection is all owned, and would otherwise dominate the results).
+    supporter_usernames = [u for u in supporter_usernames if u != config.username]
 
     fan_albums = get_fan_collections(
         supporter_usernames, fetcher, cache,
@@ -63,7 +72,9 @@ def main(argv=None) -> int:
     parser.add_argument("--config", default=None)
     parser.add_argument("--top-n", type=int, default=None)
     parser.add_argument("--limit", type=int, default=None,
-                        help="dry run: cap owned albums processed")
+                        help="faster sample: crawl supporters for only the first "
+                             "N owned albums (your full collection is still "
+                             "excluded from results)")
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
