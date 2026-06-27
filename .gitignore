@@ -1,0 +1,6 @@
+cache.db
+recommendations.html
+__pycache__/
+*.pyc
+.venv/
+config.local.toml
