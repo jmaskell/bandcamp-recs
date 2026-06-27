@@ -1,4 +1,3 @@
-import json
 from bandcamp_reco.collection import parse_pagedata_blob, raw_to_album, get_collection
 
 
@@ -49,7 +48,6 @@ class StubFetcher:
     def get(self, url, **kw):
         class R:
             text = self._html
-        R.text = self._html
         return R()
 
     def post_json(self, url, json_body):
@@ -82,3 +80,65 @@ def test_get_collection_combines_cache_items_and_api_page():
     albums = get_collection("jmaskell", fetcher, cache)
     titles = sorted(a.title for a in albums)
     assert titles == ["First", "Second"]
+
+
+def test_get_collection_dedups_by_album_key():
+    api_page = {
+        "items": [
+            {
+                "item_type": "album", "item_id": "a1", "album_id": "101",
+                "item_title": "First", "band_name": "Band One",
+                "item_url": "https://one.bandcamp.com/album/first", "item_art_id": "555",
+            },
+            {
+                "item_type": "album", "item_id": "a2", "album_id": "102",
+                "item_title": "Second", "band_name": "Band Two",
+                "item_url": "https://two.bandcamp.com/album/second", "item_art_id": "666",
+            },
+        ],
+        "more_available": False,
+        "last_token": "tok2",
+    }
+    fetcher = StubFetcher(PROFILE_HTML, [api_page])
+    cache = StubCache()
+    albums = get_collection("jmaskell", fetcher, cache)
+    titles = sorted(a.title for a in albums)
+    assert titles == ["First", "Second"]
+
+
+def test_get_collection_terminates_on_empty_page():
+    api_page = {
+        "items": [],
+        "more_available": True,
+        "last_token": "tok2",
+    }
+    fetcher = StubFetcher(PROFILE_HTML, [api_page])
+    cache = StubCache()
+    albums = get_collection("jmaskell", fetcher, cache)
+    titles = sorted(a.title for a in albums)
+    assert titles == ["First"]
+
+
+def test_raw_to_album_honors_tralbum_type():
+    album = raw_to_album(
+        {"tralbum_type": "a", "item_id": "x", "item_url": "https://a/b"}
+    )
+    assert album is not None
+    assert album.url == "https://a/b"
+    assert raw_to_album({"tralbum_type": "t", "item_id": "y"}) is None
+
+
+def test_get_collection_respects_max_items():
+    api_page = {
+        "items": [{
+            "item_type": "album", "item_id": "a2", "album_id": "102",
+            "item_title": "Second", "band_name": "Band Two",
+            "item_url": "https://two.bandcamp.com/album/second", "item_art_id": "666",
+        }],
+        "more_available": False,
+        "last_token": "tok2",
+    }
+    fetcher = StubFetcher(PROFILE_HTML, [api_page])
+    cache = StubCache()
+    albums = get_collection("jmaskell", fetcher, cache, max_items=1)
+    assert len(albums) == 1

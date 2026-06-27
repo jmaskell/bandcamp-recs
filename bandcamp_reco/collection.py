@@ -2,7 +2,7 @@ import json
 
 from bs4 import BeautifulSoup
 
-from .models import Album, art_url_from_id
+from .models import Album, album_key, art_url_from_id
 
 COLLECTION_API = "https://bandcamp.com/api/fancollection/1/collection_items"
 PROFILE_URL = "https://bandcamp.com/{username}"
@@ -60,10 +60,22 @@ def get_collection(username, fetcher, cache, max_items=None) -> list[Album]:
             {"fan_id": fan_id, "older_than_token": token, "count": 50},
         )
         new = [raw_to_album(r) for r in page.get("items", [])]
-        albums.extend(a for a in new if a)
-        token = page.get("last_token")
-        if not page.get("more_available"):
+        new = [a for a in new if a]
+        if not new:
             break
+        albums.extend(new)
+        prev_token = token
+        token = page.get("last_token")
+        if token == prev_token or not page.get("more_available"):
+            break
+    seen = set()
+    deduped = []
+    for a in albums:
+        k = album_key(a)
+        if k not in seen:
+            seen.add(k)
+            deduped.append(a)
+    albums = deduped
     if max_items is not None:
         albums = albums[:max_items]
     return albums
