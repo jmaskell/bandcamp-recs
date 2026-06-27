@@ -1,0 +1,17 @@
+# Bandcamp recommendations config
+username = "jmaskell"
+
+# How many supporters (fans) to sample per owned album
+supporters_per_album = 30
+# Overall cap on distinct fans whose collections we fetch
+max_fans = 500
+# Per-fan cap on albums read from their collection
+max_albums_per_fan = 200
+# How many recommendations to render
+top_n = 50
+
+# Base seconds between requests (jitter is added on top)
+request_delay = 0.7
+
+cache_path = "cache.db"
+output_path = "recommendations.html"
