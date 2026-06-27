@@ -4,6 +4,7 @@ import dataclasses
 from .cache import Cache
 from .collection import get_collection
 from .config import load_config
+from .fans import get_fan_collections
 from .fetch import Fetcher, CircuitBreakerTripped
 from .models import album_key
 from .render import render_html, write_html
@@ -26,24 +27,11 @@ def run(config, fetcher, cache, limit=None):
     except CircuitBreakerTripped:
         pass  # proceed with whatever we gathered; cache holds progress
 
-    # collect fan albums directly so get_collection remains monkeypatchable
-    fan_albums = {}
-    seen: set[str] = set()
-    for username in supporter_usernames:
-        if len(fan_albums) >= config.max_fans:
-            break
-        if username in seen:
-            continue
-        seen.add(username)
-        try:
-            albums = get_collection(
-                username, fetcher, cache, max_items=config.max_albums_per_fan
-            )
-        except CircuitBreakerTripped:
-            break
-        except Exception:
-            continue
-        fan_albums[username] = albums
+    fan_albums = get_fan_collections(
+        supporter_usernames, fetcher, cache,
+        max_fans=config.max_fans,
+        max_albums_per_fan=config.max_albums_per_fan,
+    )
 
     recs = score_candidates(owned_keys, fan_albums, top_n=config.top_n)
     recs = _enrich_tags(recs, fetcher, cache)

@@ -26,6 +26,8 @@ def test_run_pipeline_writes_html_and_returns_recs(tmp_path, monkeypatch):
         return owned + [_album("https://cand/x")]  # a fan who shares your taste
 
     monkeypatch.setattr(main_mod, "get_collection", fake_get_collection)
+    import bandcamp_reco.fans as fans_mod
+    monkeypatch.setattr(fans_mod, "get_collection", fake_get_collection)
     monkeypatch.setattr(main_mod, "get_supporters",
                         lambda album, fetcher, cache, limit: ["fan1"])
     monkeypatch.setattr(main_mod, "get_album_page",
