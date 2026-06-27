@@ -13,20 +13,26 @@ class Recommendation:
     why: str
 
 
-def score_candidates(owned_keys, fan_albums, top_n) -> list[Recommendation]:
-    # affinity per fan = how many of YOUR albums they also own
+def score_candidates(
+    owned_keys: set[str],
+    fan_albums: dict[str, list[Album]],
+    top_n: int,
+) -> list[Recommendation]:
+    # per-fan deduplicated key -> first Album seen with that key
+    fan_key_album = {}
     affinity = {}
-    fan_keys = {}
     for fan, albums in fan_albums.items():
-        keys = {album_key(a) for a in albums}
-        fan_keys[fan] = keys
-        affinity[fan] = len(keys & owned_keys)
+        key_to_album = {}
+        for a in albums:
+            key_to_album.setdefault(album_key(a), a)
+        fan_key_album[fan] = key_to_album
+        # affinity per fan = how many of YOUR albums they also own
+        affinity[fan] = len(set(key_to_album) & owned_keys)
 
-    # aggregate candidates (albums you don't own)
+    # aggregate candidates (albums you don't own); each fan counts once per key
     agg: dict[str, dict] = {}
-    for fan, albums in fan_albums.items():
-        for album in albums:
-            k = album_key(album)
+    for fan, key_to_album in fan_key_album.items():
+        for k, album in key_to_album.items():
             if k in owned_keys:
                 continue
             entry = agg.setdefault(

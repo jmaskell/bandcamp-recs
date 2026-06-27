@@ -35,6 +35,18 @@ def test_high_affinity_niche_beats_popular_low_affinity():
     assert "https://cand/P" in ranked
 
 
+def test_dedup_same_candidate_twice_counts_once():
+    owned = [_album(u) for u in OWNED]
+    # fan owns all 10 owned albums + the SAME candidate listed twice
+    fan_albums = {
+        "f1": owned + [_album("https://cand/x"), _album("https://cand/x")],
+    }
+    recs = score_candidates(OWNED, fan_albums, top_n=10)
+    rec = next(r for r in recs if album_key(r.album) == "https://cand/x")
+    assert rec.fan_count == 1  # one fan, not double-counted
+    assert rec.score == 10 / math.sqrt(1)  # affinity 10, not 2x
+
+
 def test_recommendation_fields_and_why():
     owned = [_album(u) for u in OWNED]
     fan_albums = {
