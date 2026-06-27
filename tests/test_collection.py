@@ -44,6 +44,7 @@ class StubFetcher:
     def __init__(self, html, api_pages):
         self._html = html
         self._api_pages = list(api_pages)
+        self.post_json_call_count = 0
 
     def get(self, url, **kw):
         class R:
@@ -51,6 +52,7 @@ class StubFetcher:
         return R()
 
     def post_json(self, url, json_body):
+        self.post_json_call_count += 1
         return self._api_pages.pop(0)
 
 
@@ -142,3 +144,31 @@ def test_get_collection_respects_max_items():
     cache = StubCache()
     albums = get_collection("jmaskell", fetcher, cache, max_items=1)
     assert len(albums) == 1
+
+
+def test_get_collection_caches_api_pages():
+    """A second get_collection call for the same user must not re-POST paged data."""
+    api_page = {
+        "items": [{
+            "item_type": "album", "item_id": "a2", "album_id": "102",
+            "item_title": "Second", "band_name": "Band Two",
+            "item_url": "https://two.bandcamp.com/album/second", "item_art_id": "666",
+        }],
+        "more_available": False,
+        "last_token": "tok2",
+    }
+    # First call: profile is fetched via GET, one additional page via POST.
+    fetcher = StubFetcher(PROFILE_HTML, [api_page])
+    cache = StubCache()
+    get_collection("jmaskell", fetcher, cache)
+    first_call_count = fetcher.post_json_call_count  # should be 1
+
+    # Second call: profile already cached; paged data must also come from cache.
+    fetcher2 = StubFetcher(PROFILE_HTML, [])  # empty api_pages — would raise on pop
+    fetcher2.post_json_call_count = 0
+    get_collection("jmaskell", fetcher2, cache)
+    assert fetcher2.post_json_call_count == 0, (
+        "second get_collection call should serve paged data from cache, "
+        "not re-POST to the API"
+    )
+    assert first_call_count == 1

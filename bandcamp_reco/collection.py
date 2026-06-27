@@ -44,7 +44,20 @@ def _albums_from_item_cache(blob: dict) -> list[Album]:
     return out
 
 
-def get_collection(username, fetcher, cache, max_items=None) -> list[Album]:
+def _fetch_collection_page(fan_id, token, fetcher, cache):
+    key = f"{fan_id}:{token}"
+    cached = cache.get("collection_page", key)
+    if cached is not None:
+        return cached
+    page = fetcher.post_json(
+        COLLECTION_API,
+        {"fan_id": fan_id, "older_than_token": token, "count": 50},
+    )
+    cache.set("collection_page", key, page)
+    return page
+
+
+def get_collection(username: str, fetcher, cache, max_items: int | None = None) -> list[Album]:
     blob = _load_profile_blob(username, fetcher, cache)
     if not blob:
         return []
@@ -53,12 +66,14 @@ def get_collection(username, fetcher, cache, max_items=None) -> list[Album]:
     cdata = blob.get("collection_data") or {}
     token = cdata.get("last_token")
     item_count = cdata.get("item_count", len(albums))
+    max_pages = 200
+    page_count = 0
     while (token and fan_id and len(albums) < item_count
            and (max_items is None or len(albums) < max_items)):
-        page = fetcher.post_json(
-            COLLECTION_API,
-            {"fan_id": fan_id, "older_than_token": token, "count": 50},
-        )
+        if page_count >= max_pages:
+            break
+        page = _fetch_collection_page(fan_id, token, fetcher, cache)
+        page_count += 1
         new = [raw_to_album(r) for r in page.get("items", [])]
         new = [a for a in new if a]
         if not new:

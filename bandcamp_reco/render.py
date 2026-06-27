@@ -54,7 +54,7 @@ def _row(rec: Recommendation) -> str:
     )
 
 
-def render_html(recommendations, username: str) -> str:
+def render_html(recommendations: list[Recommendation], username: str) -> str:
     rows = "\n".join(_row(r) for r in recommendations)
     return _PAGE.format(username=escape(username),
                         count=len(recommendations), rows=rows)

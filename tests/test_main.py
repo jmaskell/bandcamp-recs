@@ -1,4 +1,7 @@
+import requests
+
 import bandcamp_reco.main as main_mod
+import bandcamp_reco.fans as fans_mod
 from bandcamp_reco.config import Config
 from bandcamp_reco.models import Album
 
@@ -42,3 +45,36 @@ def test_run_pipeline_writes_html_and_returns_recs(tmp_path, monkeypatch):
     # tag enrichment applied to rendered candidate
     top = next(r for r in recs if r.album.url == "https://cand/x")
     assert top.album.tags == ("ambient",)
+
+
+def test_run_skips_failing_album_in_supporters_loop(tmp_path, monkeypatch):
+    """A deleted/private owned album should be skipped, not crash the whole run."""
+    album_ok = _album("https://own/ok")
+    album_bad = _album("https://own/bad")
+    owned = [album_bad, album_ok]
+
+    def fake_get_collection(username, fetcher, cache, max_items=None):
+        if username == "me":
+            return owned
+        # fan1 owns a candidate album not in owned set
+        return owned + [_album("https://cand/y")]
+
+    monkeypatch.setattr(main_mod, "get_collection", fake_get_collection)
+    monkeypatch.setattr(fans_mod, "get_collection", fake_get_collection)
+
+    def fake_get_supporters(album, fetcher, cache, limit):
+        if album.url == "https://own/bad":
+            raise requests.HTTPError("404 Not Found")
+        return ["fan1"]
+
+    monkeypatch.setattr(main_mod, "get_supporters", fake_get_supporters)
+    monkeypatch.setattr(main_mod, "get_album_page",
+                        lambda album, fetcher, cache: type(
+                            "I", (), {"tralbum_id": "1", "tags": (),
+                                      "supporter_usernames": []})())
+
+    cfg = _cfg(tmp_path)
+    recs = main_mod.run(cfg, fetcher=None, cache=None)
+    # run must complete and produce recommendations from the surviving album
+    assert (tmp_path / "out.html").exists()
+    assert any(r.album.url == "https://cand/y" for r in recs)

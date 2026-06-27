@@ -87,3 +87,48 @@ def test_get_supporters_respects_limit():
     fetcher = StubFetcher(ALBUM_HTML, api_resp)
     cache = StubCache()
     assert get_supporters(_album(), fetcher, cache, limit=1) == ["fanA"]
+
+
+class CountingStubFetcher:
+    """StubFetcher that counts post_json calls and returns a fixed response."""
+    def __init__(self, html, api_resp):
+        self._html = html
+        self._api_resp = api_resp
+        self.post_json_call_count = 0
+
+    def get(self, url, **kw):
+        html = self._html
+
+        class R:
+            text = html
+        return R()
+
+    def post_json(self, url, json_body):
+        self.post_json_call_count += 1
+        return self._api_resp
+
+
+def test_get_supporters_different_limits_use_different_cache_keys():
+    """limit=1 cached result must NOT be returned for a later limit=10 call."""
+    api_resp = {
+        "results": [
+            {"username": "fanA", "name": "Fan A"},
+            {"username": "fanB", "name": "Fan B"},
+        ],
+        "more_available": False,
+    }
+    fetcher = CountingStubFetcher(ALBUM_HTML, api_resp)
+    cache = StubCache()
+
+    # First call at limit=1 — fetches from API, caches under url#1 key.
+    result1 = get_supporters(_album(), fetcher, cache, limit=1)
+    assert result1 == ["fanA"]
+    assert fetcher.post_json_call_count == 1
+
+    # Second call at limit=10 — different key, must re-fetch (not reuse cached list).
+    result2 = get_supporters(_album(), fetcher, cache, limit=10)
+    assert fetcher.post_json_call_count == 2, (
+        "a larger limit should fetch from the API again (different cache key), "
+        "not silently return the truncated list from the previous call"
+    )
+    assert result2 == ["fanA", "fanB"]

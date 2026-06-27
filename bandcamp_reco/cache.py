@@ -15,7 +15,7 @@ class Cache:
         )
         self._conn.commit()
 
-    def get(self, namespace: str, key: str):
+    def get(self, namespace: str, key: str) -> dict | list | None:
         row = self._conn.execute(
             "SELECT value FROM kv WHERE namespace = ? AND key = ?",
             (namespace, key),

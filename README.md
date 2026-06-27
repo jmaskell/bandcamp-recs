@@ -15,6 +15,8 @@ yours, and ranks albums they own that you don't — output as a browsable HTML p
 
 Open `recommendations.html` in your browser when it finishes.
 
+**Note:** `--limit` is a dry-run sample — because it truncates your owned set, results may include albums you actually own and affinity scores are understated. Full runs (no `--limit`) give true recommendations.
+
 ## Config
 
 Edit `config.toml` — your `username`, sampling caps, request delay, output path.

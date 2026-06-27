@@ -68,15 +68,16 @@ def get_supporters(album: Album, fetcher, cache, limit: int) -> list[str]:
     # Otherwise fetch from the tralbumcollectors thumbs API.
     if not info.tralbum_id:
         return []
-    cached = cache.get("supporters", album.url)
+    cache_key = f"{album.url}#{limit}"
+    cached = cache.get("supporters", cache_key)
     if cached is not None:
-        return cached[:limit]
+        return cached
     resp = fetcher.post_json(
         THUMBS_API,
         {"tralbum_type": "a", "tralbum_id": int(info.tralbum_id), "count": limit},
     )
     usernames = [
-        r["username"] for r in (resp.get("results") or []) if r.get("username")
-    ]
-    cache.set("supporters", album.url, usernames)
-    return usernames[:limit]
+        r["username"] for r in ((resp or {}).get("results") or []) if r.get("username")
+    ][:limit]
+    cache.set("supporters", cache_key, usernames)
+    return usernames

@@ -13,19 +13,24 @@ from .supporters import get_supporters, get_album_page
 
 
 def run(config, fetcher, cache, limit=None):
-    owned = get_collection(config.username, fetcher, cache, max_items=limit)
+    try:
+        owned = get_collection(config.username, fetcher, cache, max_items=limit)
+    except CircuitBreakerTripped:
+        owned = []
     owned_keys = {album_key(a) for a in owned}
 
     # collect candidate supporters across owned albums
     supporter_usernames = []
-    try:
-        for album in owned:
+    for album in owned:
+        try:
             supporter_usernames.extend(
                 get_supporters(album, fetcher, cache,
                                limit=config.supporters_per_album)
             )
-    except CircuitBreakerTripped:
-        pass  # proceed with whatever we gathered; cache holds progress
+        except CircuitBreakerTripped:
+            break
+        except Exception:
+            continue
 
     fan_albums = get_fan_collections(
         supporter_usernames, fetcher, cache,
