@@ -13,6 +13,8 @@ class Config:
     request_delay: float
     cache_path: str
     output_path: str
+    affinity_cap: int
+    max_per_source: int
 
 
 DEFAULTS = {
@@ -24,6 +26,8 @@ DEFAULTS = {
     "request_delay": 0.7,
     "cache_path": "cache.db",
     "output_path": "recommendations.html",
+    "affinity_cap": 4,
+    "max_per_source": 2,
 }
 
 

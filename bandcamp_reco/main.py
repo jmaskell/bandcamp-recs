@@ -47,7 +47,11 @@ def run(config, fetcher, cache, limit=None):
         max_albums_per_fan=config.max_albums_per_fan,
     )
 
-    recs = score_candidates(owned_keys, fan_albums, top_n=config.top_n)
+    recs = score_candidates(
+        owned_keys, fan_albums, top_n=config.top_n,
+        affinity_cap=config.affinity_cap,
+        max_per_source=config.max_per_source,
+    )
     recs = _enrich_tags(recs, fetcher, cache)
 
     html = render_html(recs, username=config.username)

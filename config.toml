@@ -10,6 +10,14 @@ max_albums_per_fan = 200
 # How many recommendations to render
 top_n = 50
 
+# Cap on how much a single fan can influence one album's score (their shared-album
+# count is clamped to this). Lower = a few high-overlap "friends" matter less and
+# broad consensus matters more.
+affinity_cap = 4
+# Max albums from the same label/artist (Bandcamp source) in the results, so one
+# label can't flood the list.
+max_per_source = 2
+
 # Base seconds between requests (jitter is added on top)
 request_delay = 0.7
 
