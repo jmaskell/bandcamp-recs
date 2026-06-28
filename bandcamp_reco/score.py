@@ -21,14 +21,10 @@ def _why(count: int, typical: int) -> str:
     return f"Owned by {head} ~{typical} {alb_word} with your collection."
 
 
-def score_candidates(
-    owned_keys: set[str],
-    fan_albums: dict[str, list[Album]],
-    top_n: int,
-    affinity_cap: int = 4,
-    max_per_source: int = 2,
-) -> list[Recommendation]:
-    # per-fan deduplicated key -> first Album seen with that key
+def _aggregate(owned_keys, fan_albums):
+    """Map each candidate album (one you don't own) to the list of affinities of
+    the fans who own it. affinity(fan) = how many of YOUR albums they also own.
+    Each fan contributes to a candidate at most once (per-fan dedup)."""
     fan_key_album = {}
     affinity = {}
     for fan, albums in fan_albums.items():
@@ -36,36 +32,40 @@ def score_candidates(
         for a in albums:
             key_to_album.setdefault(album_key(a), a)
         fan_key_album[fan] = key_to_album
-        # affinity per fan = how many of YOUR albums they also own
         affinity[fan] = len(set(key_to_album) & owned_keys)
 
-    # Aggregate candidates (albums you don't own); each fan counts once per key.
-    # A fan's contribution is capped at affinity_cap so a few very-overlapping
-    # "friends" can't dominate; summing capped weights across distinct fans
-    # rewards broad consensus over a single enthusiastic endorsement.
     agg: dict[str, dict] = {}
     for fan, key_to_album in fan_key_album.items():
-        weight = min(affinity[fan], affinity_cap)
         for k, album in key_to_album.items():
             if k in owned_keys:
                 continue
-            entry = agg.setdefault(
-                k, {"album": album, "score": 0.0, "count": 0, "shared": []}
-            )
-            entry["score"] += weight
-            entry["count"] += 1
+            entry = agg.setdefault(k, {"album": album, "shared": []})
             entry["shared"].append(affinity[fan])
+    return agg
 
+
+def _score(shared: list[int], affinity_cap: int) -> float:
+    # Sum of per-fan weights, each capped so one very-overlapping fan can't
+    # dominate; summing across fans rewards broad consensus.
+    return float(sum(min(a, affinity_cap) for a in shared))
+
+
+def score_candidates(
+    owned_keys: set[str],
+    fan_albums: dict[str, list[Album]],
+    top_n: int,
+    affinity_cap: int = 4,
+    max_per_source: int = 2,
+) -> list[Recommendation]:
     recs = []
-    for entry in agg.values():
-        count = entry["count"]
-        typical = round(sum(entry["shared"]) / count) if count else 0
+    for entry in _aggregate(owned_keys, fan_albums).values():
+        shared = entry["shared"]
+        count = len(shared)
+        typical = round(sum(shared) / count) if count else 0
         recs.append(Recommendation(
-            album=entry["album"], score=float(entry["score"]), fan_count=count,
-            typical_shared=typical, why=_why(count, typical),
+            album=entry["album"], score=_score(shared, affinity_cap),
+            fan_count=count, typical_shared=typical, why=_why(count, typical),
         ))
-
-    # Highest score first; break ties toward broader consensus.
     recs.sort(key=lambda r: (r.score, r.fan_count), reverse=True)
     return _diversify(recs, top_n, max_per_source)
 
@@ -92,3 +92,39 @@ def _diversify(recs, top_n, max_per_source):
             break
         selected.append(rec)
     return selected
+
+
+def candidate_pool(owned_keys, fan_albums, get_tags=None, min_fans=2, pool_size=400):
+    """Build the data the interactive HTML page re-ranks client-side: for each
+    candidate (owned by >= min_fans fans), the album metadata plus a histogram
+    of owner affinities (affinity -> number of fans). The browser can then
+    recompute scores for any affinity_cap without re-running the pipeline.
+
+    get_tags(url) -> tuple[str, ...] | None is an optional callback for tags
+    (e.g. read from cache); falls back to the album's own tags."""
+    items = []
+    for entry in _aggregate(owned_keys, fan_albums).values():
+        shared = entry["shared"]
+        if len(shared) < min_fans:
+            continue
+        album = entry["album"]
+        hist: dict[int, int] = {}
+        for a in shared:
+            hist[a] = hist.get(a, 0) + 1
+        tags = list(album.tags)
+        if get_tags is not None:
+            fetched = get_tags(album.url)
+            if fetched:
+                tags = list(fetched)
+        items.append({
+            "title": album.title,
+            "artist": album.artist,
+            "url": album.url,
+            "art": album.art_url or "",
+            "source": album_source(album.url),
+            "tags": tags,
+            "hist": {str(k): v for k, v in hist.items()},
+            "fans": len(shared),
+        })
+    items.sort(key=lambda d: d["fans"], reverse=True)
+    return items[:pool_size]

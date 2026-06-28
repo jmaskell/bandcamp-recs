@@ -1,5 +1,5 @@
 from bandcamp_reco.models import Album, album_key, album_source
-from bandcamp_reco.score import score_candidates, Recommendation
+from bandcamp_reco.score import score_candidates, candidate_pool, Recommendation
 
 
 def _album(url):
@@ -113,3 +113,34 @@ def test_why_grammar_singular():
                          _album("https://c.bandcamp.com/album/x")]}
     recs = score_candidates(OWNED, fan_albums, top_n=5)
     assert recs[0].why == "Owned by 1 fan who shares ~1 album with your collection."
+
+
+def test_candidate_pool_histogram_and_min_fans():
+    # candidate X owned by 3 fans with affinities 2, 2, 5; candidate Y by 1 fan
+    fans = {
+        "a": [_album(OWNED_LIST[0]), _album(OWNED_LIST[1]),
+              _album("https://x.bandcamp.com/album/x")],
+        "b": [_album(OWNED_LIST[0]), _album(OWNED_LIST[1]),
+              _album("https://x.bandcamp.com/album/x")],
+        "c": [_album(OWNED_LIST[j]) for j in range(5)]
+             + [_album("https://x.bandcamp.com/album/x")],
+        "d": [_album(OWNED_LIST[0]), _album("https://y.bandcamp.com/album/y")],
+    }
+    pool = candidate_pool(OWNED, fans, min_fans=2)
+    by_url = {it["url"]: it for it in pool}
+    # Y is owned by only 1 fan -> excluded by the min_fans floor
+    assert "https://y.bandcamp.com/album/y" not in by_url
+    x = by_url["https://x.bandcamp.com/album/x"]
+    assert x["fans"] == 3
+    assert x["source"] == "x"
+    assert x["hist"] == {"2": 2, "5": 1}  # affinity -> number of fans
+
+
+def test_candidate_pool_uses_tag_callback():
+    fans = {
+        "a": [_album(OWNED_LIST[0]), _album("https://x.bandcamp.com/album/x")],
+        "b": [_album(OWNED_LIST[1]), _album("https://x.bandcamp.com/album/x")],
+    }
+    pool = candidate_pool(OWNED, fans, get_tags=lambda u: ("house", "edits"),
+                          min_fans=2)
+    assert pool[0]["tags"] == ["house", "edits"]

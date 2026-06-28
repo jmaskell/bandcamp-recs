@@ -8,8 +8,8 @@ from .fans import get_fan_collections
 from .fetch import Fetcher, CircuitBreakerTripped
 from .models import album_key
 from .render import render_html, write_html
-from .score import score_candidates
-from .supporters import get_supporters, get_album_page
+from .score import score_candidates, candidate_pool
+from .supporters import get_supporters, get_album_page, cached_tags
 
 
 def run(config, fetcher, cache, limit=None):
@@ -52,9 +52,22 @@ def run(config, fetcher, cache, limit=None):
         affinity_cap=config.affinity_cap,
         max_per_source=config.max_per_source,
     )
+    # Fetch+cache tags for the default top picks so the initial view is tag-rich.
     recs = _enrich_tags(recs, fetcher, cache)
 
-    html = render_html(recs, username=config.username)
+    # The page re-ranks this candidate pool client-side from its controls.
+    pool = candidate_pool(
+        owned_keys, fan_albums,
+        get_tags=lambda u: cached_tags(u, cache),
+        min_fans=2, pool_size=400,
+    )
+    defaults = {
+        "affinity_cap": config.affinity_cap,
+        "max_per_source": config.max_per_source,
+        "top_n": config.top_n,
+        "min_fans": 2,
+    }
+    html = render_html(pool, username=config.username, defaults=defaults)
     write_html(html, config.output_path)
     return recs
 
@@ -91,5 +104,6 @@ def main(argv=None) -> int:
         recs = run(config, fetcher, cache, limit=args.limit)
     finally:
         cache.close()
-    print(f"Wrote {len(recs)} recommendations to {config.output_path}")
+    print(f"Wrote recommendations to {config.output_path} "
+          f"(open it and adjust the controls to re-rank)")
     return 0

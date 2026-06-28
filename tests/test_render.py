@@ -1,26 +1,60 @@
-from bandcamp_reco.models import Album
-from bandcamp_reco.score import Recommendation
+import json
+
 from bandcamp_reco.render import render_html, write_html
 
 
-def _rec():
-    album = Album(
-        item_id="1", album_id="9", title="Weird & Wonderful",
-        artist="Cool <Band>", url="https://x.bandcamp.com/album/y",
-        art_url="https://f4.bcbits.com/img/a1_16.jpg", tags=("ambient", "drone"),
-    )
-    return Recommendation(album=album, score=12.5, fan_count=7,
-                          typical_shared=9, why="Owned by 7 fans who each share ~9 albums with your collection.")
+DEFAULTS = {"affinity_cap": 4, "max_per_source": 2, "top_n": 50, "min_fans": 2}
 
 
-def test_render_html_contains_fields_and_escapes():
-    html = render_html([_rec()], username="jmaskell")
+def _pool():
+    return [{
+        "title": "Weird & Wonderful",
+        "artist": "Cool <Band>",
+        "url": "https://x.bandcamp.com/album/y",
+        "art": "https://f4.bcbits.com/img/a1_16.jpg",
+        "source": "x",
+        "tags": ["ambient", "drone"],
+        "hist": {"2": 5, "3": 2},
+        "fans": 7,
+    }]
+
+
+def test_render_embeds_pool_and_controls():
+    html = render_html(_pool(), username="jmaskell", defaults=DEFAULTS)
+    # candidate data is embedded for client-side ranking
     assert "https://x.bandcamp.com/album/y" in html
-    assert "Weird &amp; Wonderful" in html       # escaped &
-    assert "Cool &lt;Band&gt;" in html           # escaped <>
+    assert "Weird & Wonderful" in html
     assert "ambient" in html
-    assert "7 fans" in html
+    # the affinity-cap control is present and defaults are embedded to seed it
+    assert 'id="cap"' in html
+    assert '"affinity_cap"' in html
     assert "jmaskell" in html
+
+
+def test_render_escapes_username_in_title():
+    html = render_html([], username="a<b>&c", defaults=DEFAULTS)
+    assert "a&lt;b&gt;&amp;c" in html
+    assert "<b>" not in html  # raw tag not injected
+
+
+def test_render_neutralizes_script_breakout_in_data():
+    pool = _pool()
+    pool[0]["title"] = "evil</script>alert(1)"
+    html = render_html(pool, username="u", defaults=DEFAULTS)
+    # data cannot close the script tag: only the real closing </script> remains
+    assert html.count("</script>") == 1
+    assert "<\\/script>" in html  # the data's closing sequence was escaped
+
+
+def test_embedded_pool_is_valid_json():
+    html = render_html(_pool(), username="u", defaults=DEFAULTS)
+    marker = "const POOL = "
+    start = html.index(marker) + len(marker)
+    end = html.index(";\n", start)
+    raw = html[start:end].replace("<\\/", "</")  # undo breakout-escaping
+    data = json.loads(raw)
+    assert data[0]["title"] == "Weird & Wonderful"
+    assert data[0]["hist"] == {"2": 5, "3": 2}
 
 
 def test_write_html_writes_file(tmp_path):

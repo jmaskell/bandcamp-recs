@@ -60,6 +60,17 @@ def get_album_page(album: Album, fetcher, cache) -> AlbumPageInfo:
     return info
 
 
+def cached_tags(album_url: str, cache) -> tuple[str, ...]:
+    """Tags for an album from the cache only (no network). Returns () if the
+    album page hasn't been fetched yet, or if no cache is available."""
+    if cache is None:
+        return ()
+    cached = cache.get("album_page", album_url)
+    if cached:
+        return tuple(cached.get("tags", []))
+    return ()
+
+
 def get_supporters(album: Album, fetcher, cache, limit: int) -> list[str]:
     info = get_album_page(album, fetcher, cache)
     # If the page embed included supporters (legacy path), use them directly.
