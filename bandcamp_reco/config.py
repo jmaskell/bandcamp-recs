@@ -15,6 +15,7 @@ class Config:
     output_path: str
     affinity_cap: int
     max_per_source: int
+    hide_owned_sources: bool
 
 
 DEFAULTS = {
@@ -28,6 +29,7 @@ DEFAULTS = {
     "output_path": "recommendations.html",
     "affinity_cap": 4,
     "max_per_source": 2,
+    "hide_owned_sources": False,
 }
 
 

@@ -3,7 +3,8 @@ import json
 from bandcamp_reco.render import render_html, write_html
 
 
-DEFAULTS = {"affinity_cap": 4, "max_per_source": 2, "top_n": 50, "min_fans": 2}
+DEFAULTS = {"affinity_cap": 4, "max_per_source": 2, "top_n": 50, "min_fans": 2,
+            "hide_owned_sources": False}
 
 
 def _pool():
@@ -29,6 +30,15 @@ def test_render_embeds_pool_and_controls():
     assert 'id="cap"' in html
     assert '"affinity_cap"' in html
     assert "jmaskell" in html
+
+
+def test_render_embeds_owned_sources_and_filter():
+    html = render_html(_pool(), username="u", defaults=DEFAULTS,
+                       owned_sources=["kompakt", "manualsmiles"])
+    assert 'id="hideOwned"' in html          # the filter checkbox exists
+    assert "kompakt" in html                  # owned sources embedded
+    assert "manualsmiles" in html
+    assert "OWNED_SOURCES" in html            # JS uses them
 
 
 def test_render_escapes_username_in_title():

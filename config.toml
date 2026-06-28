@@ -17,6 +17,9 @@ affinity_cap = 4
 # Max albums from the same label/artist (Bandcamp source) in the results, so one
 # label can't flood the list.
 max_per_source = 2
+# Initial state of the page's "hide labels/artists I already own" filter. You can
+# always toggle it live in the page; this just sets the default when it opens.
+hide_owned_sources = false
 
 # Base seconds between requests (jitter is added on top)
 request_delay = 0.7

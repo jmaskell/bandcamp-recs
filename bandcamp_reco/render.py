@@ -19,6 +19,10 @@ _PAGE = r"""<!DOCTYPE html>
   .ctrl input[type=range] { width: 100%; }
   .ctrl .val { font-weight: 700; color: #1a6; }
   .ctrl .hint { font-size: 0.72rem; color: #999; }
+  .toggle { display: block; margin: 0.75rem 0 0; font-size: 0.9rem; color: #333;
+            cursor: pointer; }
+  .toggle input { margin-right: 0.4rem; }
+  .toggle .hint { color: #999; font-size: 0.8rem; }
   .count { color: #666; font-size: 0.9rem; margin: 0.5rem 0 0; }
   .rec { display: flex; gap: 1rem; padding: 1rem 0; border-top: 1px solid #eee; }
   .rec img { width: 100px; height: 100px; object-fit: cover; background: #f3f3f3; flex: none; }
@@ -62,6 +66,9 @@ Adjust the controls to re-rank instantly &mdash; <a href="#" class="reset" id="r
   </div>
 </div>
 
+<label class="toggle"><input type="checkbox" id="hideOwned"> Hide labels/artists I already
+own music from <span class="hint" id="ownedCount"></span></label>
+
 <p class="count" id="count"></p>
 <div id="recs"></div>
 <noscript><p>This page needs JavaScript to rank and display the recommendations.</p></noscript>
@@ -69,17 +76,22 @@ Adjust the controls to re-rank instantly &mdash; <a href="#" class="reset" id="r
 <script>
 const POOL = __POOL__;
 const DEFAULTS = __DEFAULTS__;
+const OWNED_SOURCES = new Set(__OWNED_SOURCES__);
 
 const el = (id) => document.getElementById(id);
 const controls = {
   cap: el("cap"), minf: el("minf"), src: el("src"), topn: el("topn"),
 };
+const hideOwned = el("hideOwned");
 
 function applyDefaults() {
   controls.cap.value = DEFAULTS.affinity_cap;
   controls.minf.value = DEFAULTS.min_fans;
   controls.src.value = DEFAULTS.max_per_source;
   controls.topn.value = DEFAULTS.top_n;
+  hideOwned.checked = DEFAULTS.hide_owned_sources;
+  el("ownedCount").textContent =
+    "(" + OWNED_SOURCES.size + " in your collection)";
 }
 
 function whyText(fans, typical) {
@@ -174,6 +186,9 @@ function render() {
   el("topnVal").textContent = topN;
 
   let rows = scored(cap).filter((r) => r.fans >= minf);
+  if (hideOwned.checked) {
+    rows = rows.filter((r) => !OWNED_SOURCES.has(r.item.source));
+  }
   rows.sort((x, y) => (y.score - x.score) || (y.fans - x.fans));
   rows = diversify(rows, maxPer, topN);
 
@@ -186,6 +201,7 @@ function render() {
 }
 
 for (const c of Object.values(controls)) c.addEventListener("input", render);
+hideOwned.addEventListener("change", render);
 el("reset").addEventListener("click", (e) => { e.preventDefault(); applyDefaults(); render(); });
 
 applyDefaults();
@@ -196,10 +212,12 @@ render();
 """
 
 
-def render_html(pool: list[dict], username: str, defaults: dict) -> str:
+def render_html(pool: list[dict], username: str, defaults: dict,
+                owned_sources=()) -> str:
     """Render the interactive recommendations page. `pool` is the candidate
     data from score.candidate_pool; the page re-ranks it client-side from the
-    control values, seeded by `defaults`."""
+    control values, seeded by `defaults`. `owned_sources` is the set of
+    labels/artists the user already owns, for the "hide owned" filter."""
     def embed(value) -> str:
         # JSON, made safe to sit inside a <script> tag (can't break out via </).
         return json.dumps(value).replace("</", "<\\/")
@@ -208,6 +226,7 @@ def render_html(pool: list[dict], username: str, defaults: dict) -> str:
         _PAGE
         .replace("__POOL__", embed(pool))
         .replace("__DEFAULTS__", embed(defaults))
+        .replace("__OWNED_SOURCES__", embed(sorted(owned_sources)))
         .replace("__USERNAME_TEXT__", _html_escape(username))
     )
 

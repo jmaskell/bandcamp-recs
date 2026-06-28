@@ -6,7 +6,7 @@ from .collection import get_collection
 from .config import load_config
 from .fans import get_fan_collections
 from .fetch import Fetcher, CircuitBreakerTripped
-from .models import album_key
+from .models import album_key, album_source
 from .render import render_html, write_html
 from .score import score_candidates, candidate_pool
 from .supporters import get_supporters, get_album_page, cached_tags
@@ -66,8 +66,13 @@ def run(config, fetcher, cache, limit=None):
         "max_per_source": config.max_per_source,
         "top_n": config.top_n,
         "min_fans": 2,
+        "hide_owned_sources": config.hide_owned_sources,
     }
-    html = render_html(pool, username=config.username, defaults=defaults)
+    # Labels/artists (Bandcamp sources) you already own music from, so the page
+    # can offer to filter them out for pure discovery.
+    owned_sources = sorted({album_source(a.url) for a in owned})
+    html = render_html(pool, username=config.username, defaults=defaults,
+                       owned_sources=owned_sources)
     write_html(html, config.output_path)
     return recs
 

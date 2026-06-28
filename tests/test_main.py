@@ -12,7 +12,7 @@ def _cfg(tmp_path):
         max_albums_per_fan=50, top_n=5, request_delay=0.0,
         cache_path=str(tmp_path / "c.db"),
         output_path=str(tmp_path / "out.html"),
-        affinity_cap=4, max_per_source=2,
+        affinity_cap=4, max_per_source=2, hide_owned_sources=False,
     )
 
 
