@@ -7,6 +7,7 @@ import bandcamp_reco.fans as fans_mod
 from bandcamp_reco.config import Config, AppleMusicConfig
 from bandcamp_reco.models import Album
 from bandcamp_reco.apple_music import AppleMatch
+from bandcamp_reco.progress import Reporter
 
 
 def _cfg(tmp_path):
@@ -168,7 +169,7 @@ def test_run_annotates_apple_music_when_enabled(tmp_path, monkeypatch):
     _base_stubs(monkeypatch, [_album("https://own/1")])
     monkeypatch.setattr(main_mod, "AppleMusicClient", lambda **kw: object())
     monkeypatch.setattr(main_mod, "lookup_pool",
-                        lambda pool, client, cache, country: {
+                        lambda pool, client, cache, country, **kw: {
                             "https://cand/x": AppleMatch(
                                 "available", "https://music.apple.com/gb/album/z/9",
                                 "X", "A")})
@@ -206,3 +207,46 @@ def test_run_embeds_per_record_data(tmp_path, monkeypatch):
     assert "BYRECORD" in html
     assert "https://own/1" in html      # the seed record (in OWNED_RECORDS)
     assert "https://cand/x" in html     # its similar album (in ALBUMS)
+
+
+def test_run_emits_phase_headers_with_enabled_reporter(tmp_path, monkeypatch, capsys):
+    _base_stubs(monkeypatch, [_album("https://own/1")])
+    main_mod.run(_cfg(tmp_path), fetcher=None, cache=None,
+                 reporter=Reporter(enabled=True))
+    err = capsys.readouterr().err
+    assert "Reading your collection" in err
+    assert "Scoring recommendations" in err
+    assert "Writing page" in err
+
+
+def test_run_silent_with_default_reporter(tmp_path, monkeypatch, capsys):
+    _base_stubs(monkeypatch, [_album("https://own/1")])
+    main_mod.run(_cfg(tmp_path), fetcher=None, cache=None)
+    err = capsys.readouterr().err
+    assert "→" not in err  # no phase-header arrows
+    assert "Reading your collection" not in err
+
+
+def _fake_pipeline_for_main(monkeypatch, tmp_path, captured):
+    def fake_run(config, fetcher, cache, limit=None, reporter=None):
+        captured["reporter"] = reporter
+        return []
+    monkeypatch.setattr(main_mod, "run", fake_run)
+    monkeypatch.setattr(main_mod, "load_config", lambda path: _cfg(tmp_path))
+    monkeypatch.setattr(main_mod, "Cache",
+                        lambda path: type("C", (), {"close": lambda self: None})())
+    monkeypatch.setattr(main_mod, "Fetcher", lambda delay: object())
+
+
+def test_main_quiet_passes_disabled_reporter(tmp_path, monkeypatch):
+    captured = {}
+    _fake_pipeline_for_main(monkeypatch, tmp_path, captured)
+    assert main_mod.main(["--quiet"]) == 0
+    assert captured["reporter"].enabled is False
+
+
+def test_main_default_passes_enabled_reporter(tmp_path, monkeypatch):
+    captured = {}
+    _fake_pipeline_for_main(monkeypatch, tmp_path, captured)
+    assert main_mod.main([]) == 0
+    assert captured["reporter"].enabled is True

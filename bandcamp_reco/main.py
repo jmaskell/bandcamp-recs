@@ -9,6 +9,7 @@ from .config import load_config
 from .fans import get_fan_collections
 from .fetch import Fetcher, CircuitBreakerTripped
 from .models import album_key, album_source, album_key_from_url
+from .progress import make_reporter, NULL_REPORTER
 from .render import render_html, write_html
 from .score import (
     score_candidates, candidate_pool, per_record_pools, normalize_per_record,
@@ -16,12 +17,13 @@ from .score import (
 from .supporters import get_supporters, get_album_page, cached_tags
 
 
-def _apply_apple_music(config, pool, cache) -> bool:
+def _apply_apple_music(config, pool, cache, reporter=NULL_REPORTER) -> bool:
     if config.apple_music is None:
         return False
     try:
         client = AppleMusicClient(delay=config.apple_music.request_delay)
-        results = lookup_pool(pool, client, cache, config.apple_music.country)
+        results = lookup_pool(pool, client, cache, config.apple_music.country,
+                              reporter=reporter)
     except Exception as exc:
         print(f"Apple Music: disabled ({exc})", file=sys.stderr)
         return False
@@ -39,7 +41,8 @@ def _apply_apple_music(config, pool, cache) -> bool:
     return True
 
 
-def run(config, fetcher, cache, limit=None):
+def run(config, fetcher, cache, limit=None, reporter=NULL_REPORTER):
+    reporter.phase("Reading your collection")
     try:
         owned = get_collection(config.username, fetcher, cache)
     except CircuitBreakerTripped:
@@ -56,15 +59,17 @@ def run(config, fetcher, cache, limit=None):
     # supporter of your own albums; never sample yourself as a fan (your
     # collection is all owned, and would otherwise dominate the results).
     seed_supporters: dict[str, list[str]] = {}
-    for album in crawl_albums:
-        try:
-            sup = get_supporters(album, fetcher, cache,
-                                 limit=config.supporters_per_album)
-        except CircuitBreakerTripped:
-            break
-        except Exception:
-            continue
-        seed_supporters[album_key(album)] = [u for u in sup if u != config.username]
+    with reporter.bar(len(crawl_albums), "Crawling supporters") as bar:
+        for album in crawl_albums:
+            try:
+                sup = get_supporters(album, fetcher, cache,
+                                     limit=config.supporters_per_album)
+            except CircuitBreakerTripped:
+                break
+            except Exception:
+                continue
+            seed_supporters[album_key(album)] = [u for u in sup if u != config.username]
+            bar.update()
 
     supporter_usernames = [u for seed in seed_supporters.values() for u in seed]
 
@@ -72,8 +77,10 @@ def run(config, fetcher, cache, limit=None):
         supporter_usernames, fetcher, cache,
         max_fans=config.max_fans,
         max_albums_per_fan=config.max_albums_per_fan,
+        reporter=reporter,
     )
 
+    reporter.phase("Scoring recommendations")
     recs = score_candidates(
         owned_keys, fan_albums, top_n=config.top_n,
         affinity_cap=config.affinity_cap,
@@ -119,7 +126,9 @@ def run(config, fetcher, cache, limit=None):
     # per-record album, so each album is looked up at most once (cached) and both
     # views show the link. The album dicts are shared by reference, so mutating
     # them here updates the embedded ALBUMS table too.
-    apple_enabled = _apply_apple_music(config, pool + list(albums.values()), cache)
+    apple_enabled = _apply_apple_music(config, pool + list(albums.values()), cache,
+                                       reporter=reporter)
+    reporter.phase("Writing page")
     html = render_html(
         pool, username=config.username, defaults=defaults,
         owned_sources=owned_sources, apple_enabled=apple_enabled,
@@ -149,6 +158,8 @@ def main(argv=None) -> int:
                         help="faster sample: crawl supporters for only the first "
                              "N owned albums (your full collection is still "
                              "excluded from results)")
+    parser.add_argument("--quiet", action="store_true",
+                        help="suppress progress output")
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
@@ -157,8 +168,9 @@ def main(argv=None) -> int:
 
     cache = Cache(config.cache_path)
     fetcher = Fetcher(delay=config.request_delay)
+    reporter = make_reporter(quiet=args.quiet)
     try:
-        recs = run(config, fetcher, cache, limit=args.limit)
+        recs = run(config, fetcher, cache, limit=args.limit, reporter=reporter)
     finally:
         cache.close()
     print(f"Wrote recommendations to {config.output_path} "
