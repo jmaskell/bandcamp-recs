@@ -58,3 +58,15 @@ def test_apple_music_config_none_when_disabled(tmp_path):
     p.write_text('username = "me"\n[apple_music]\nenabled = false\n')
     cfg = load_config(str(p))
     assert cfg.apple_music is None
+
+
+def test_per_record_settings_default_and_override(tmp_path):
+    cfg = load_config(str(tmp_path / "nope.toml"))
+    assert cfg.per_record_pool_size == 60
+    assert cfg.per_record_min_fans == 2
+
+    p = tmp_path / "config.toml"
+    p.write_text("per_record_pool_size = 25\nper_record_min_fans = 3\n")
+    cfg2 = load_config(str(p))
+    assert cfg2.per_record_pool_size == 25
+    assert cfg2.per_record_min_fans == 3

@@ -21,6 +21,13 @@ max_per_source = 2
 # always toggle it live in the page; this just sets the default when it opens.
 hide_owned_sources = false
 
+# --- Per-record recommendations ("By record" view) ---
+# Max similar albums embedded per owned record (the main page-size lever).
+per_record_pool_size = 60
+# Min fans (of a record) who must own a candidate for it to appear in that
+# record's similar list.
+per_record_min_fans = 2
+
 # Base seconds between requests (jitter is added on top)
 request_delay = 0.7
 

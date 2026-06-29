@@ -23,6 +23,8 @@ class Config:
     affinity_cap: int
     max_per_source: int
     hide_owned_sources: bool
+    per_record_pool_size: int = 60
+    per_record_min_fans: int = 2
     apple_music: AppleMusicConfig | None = None
 
 
@@ -38,6 +40,8 @@ DEFAULTS = {
     "affinity_cap": 4,
     "max_per_source": 2,
     "hide_owned_sources": False,
+    "per_record_pool_size": 60,
+    "per_record_min_fans": 2,
 }
 
 
