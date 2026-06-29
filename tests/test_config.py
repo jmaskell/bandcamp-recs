@@ -31,6 +31,7 @@ def test_apple_music_config_parsed_from_section(tmp_path):
     cfg = load_config(str(p))
     assert cfg.username == "me"
     assert cfg.apple_music is not None
+    assert cfg.apple_music.enabled is True
     assert cfg.apple_music.country == "us"
     assert cfg.apple_music.request_delay == 2.0
 
@@ -40,6 +41,7 @@ def test_apple_music_config_defaults(tmp_path):
     p.write_text('username = "me"\n[apple_music]\n')  # empty section
     cfg = load_config(str(p))
     assert cfg.apple_music is not None
+    assert cfg.apple_music.enabled is True
     assert cfg.apple_music.country == "gb"        # default
     assert cfg.apple_music.request_delay == 3.0   # default
 

@@ -47,7 +47,7 @@ def _parse_apple(section) -> AppleMusicConfig | None:
     if section is None or not section.get("enabled", True):
         return None
     return AppleMusicConfig(
-        enabled=True,
+        enabled=bool(section.get("enabled", True)),
         country=section.get("country", "gb"),
         request_delay=float(section.get("request_delay", 3.0)),
     )

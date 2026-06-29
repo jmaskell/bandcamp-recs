@@ -130,7 +130,6 @@ class AppleMusicClient:
             resp.raise_for_status()
             data = resp.json() or {}
             return data.get("results") or []
-        raise AppleSearchError("exhausted retries")
 
 
 def lookup_pool(pool, client, cache, country) -> dict:

@@ -173,7 +173,7 @@ function diversify(rows, maxPer, topN) {
   return selected;
 }
 
-function row(r, rank) {
+function row(r, rank, flags) {
   const it = r.item;
   const wrap = document.createElement("div");
   wrap.className = "rec";
@@ -228,7 +228,7 @@ function row(r, rank) {
       na.className = "na"; na.textContent = "Not on Apple Music";
       apple.appendChild(na);
     }
-    const flagged = !!loadFlags()[it.url];
+    const flagged = !!flags[it.url];
     const fb = document.createElement("button");
     fb.className = "flag" + (flagged ? " on" : "");
     fb.textContent = flagged ? "⚑ flagged" : "⚐ flag";
@@ -274,7 +274,8 @@ function render() {
 
   const container = el("recs");
   container.textContent = "";
-  rows.forEach((r, i) => container.appendChild(row(r, i + 1)));
+  const flags = APPLE_ENABLED ? loadFlags() : {};
+  rows.forEach((r, i) => container.appendChild(row(r, i + 1, flags)));
 
   el("count").textContent = rows.length + " of " + POOL.length +
     " candidate albums shown.";

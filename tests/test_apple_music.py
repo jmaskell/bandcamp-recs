@@ -1,6 +1,6 @@
 import pytest
 
-from bandcamp_reco.apple_music import normalize, match_album, AppleMatch, AppleMusicClient, AppleRateLimited
+from bandcamp_reco.apple_music import normalize, match_album, AppleMatch, AppleMusicClient, AppleRateLimited, AppleSearchError
 
 
 @pytest.fixture(autouse=True)
@@ -110,6 +110,20 @@ def test_search_album_raises_on_403_rate_limit():
     sess = FakeSession([FakeResp(403)])
     client = AppleMusicClient(session=sess)
     with pytest.raises(AppleRateLimited):
+        client.search_album("a", "b", "gb")
+
+
+def test_search_album_raises_on_429_rate_limit():
+    sess = FakeSession([FakeResp(429)])
+    client = AppleMusicClient(session=sess)
+    with pytest.raises(AppleRateLimited):
+        client.search_album("a", "b", "gb")
+
+
+def test_search_album_raises_search_error_on_persistent_5xx():
+    sess = FakeSession([FakeResp(500), FakeResp(500), FakeResp(500)])
+    client = AppleMusicClient(session=sess, max_retries=2)
+    with pytest.raises(AppleSearchError):
         client.search_album("a", "b", "gb")
 
 
