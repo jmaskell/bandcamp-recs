@@ -71,3 +71,26 @@ def test_write_html_writes_file(tmp_path):
     p = tmp_path / "out.html"
     write_html("<html>ok</html>", str(p))
     assert p.read_text() == "<html>ok</html>"
+
+
+def _apple_pool():
+    p = _pool()
+    p[0]["apple"] = "available"
+    p[0]["appleUrl"] = "https://music.apple.com/gb/album/z/123"
+    p[0]["appleName"] = "Weird & Wonderful"
+    p[0]["appleArtist"] = "Cool Band"
+    return p
+
+
+def test_render_apple_disabled_when_not_requested():
+    html = render_html(_pool(), username="u", defaults=DEFAULTS)
+    assert "APPLE_ENABLED = false" in html
+
+
+def test_render_apple_enabled_embeds_controls_and_data():
+    html = render_html(_apple_pool(), username="u", defaults=DEFAULTS,
+                       apple_enabled=True)
+    assert "APPLE_ENABLED = true" in html
+    assert 'id="hideOnApple"' in html
+    assert 'id="hideNotApple"' in html
+    assert "https://music.apple.com/gb/album/z/123" in html

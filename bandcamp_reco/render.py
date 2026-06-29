@@ -33,6 +33,9 @@ _PAGE = r"""<!DOCTYPE html>
   .artist { color: #555; }
   .tags { color: #888; font-size: 0.85rem; margin-top: 0.25rem; }
   .why { color: #777; font-size: 0.85rem; margin-top: 0.25rem; }
+  .apple { font-size: 0.8rem; margin-top: 0.25rem; }
+  .apple a { color: #fa2d6c; }
+  .apple .na { color: #bbb; }
   a { color: #1a6; text-decoration: none; }
   a:hover { text-decoration: underline; }
   .reset { font-size: 0.8rem; }
@@ -68,6 +71,10 @@ Adjust the controls to re-rank instantly &mdash; <a href="#" class="reset" id="r
 
 <label class="toggle"><input type="checkbox" id="hideOwned"> Hide labels/artists I already
 own music from <span class="hint" id="ownedCount"></span></label>
+<div id="appleControls" style="display:none">
+  <label class="toggle"><input type="checkbox" id="hideOnApple"> Hide albums on Apple Music</label>
+  <label class="toggle"><input type="checkbox" id="hideNotApple"> Hide albums not on Apple Music</label>
+</div>
 
 <p class="count" id="count"></p>
 <div id="recs"></div>
@@ -171,6 +178,22 @@ function row(r, rank) {
   why.className = "why"; why.textContent = whyText(r.fans, r.typical);
   meta.appendChild(why);
 
+  if (APPLE_ENABLED) {
+    const apple = document.createElement("div");
+    apple.className = "apple";
+    if (it.apple === "available" && it.appleUrl) {
+      const al = document.createElement("a");
+      al.href = it.appleUrl; al.textContent = "Apple Music";
+      al.target = "_blank"; al.rel = "noopener";
+      apple.appendChild(al);
+    } else {
+      const na = document.createElement("span");
+      na.className = "na"; na.textContent = "Not on Apple Music";
+      apple.appendChild(na);
+    }
+    meta.appendChild(apple);
+  }
+
   wrap.appendChild(meta);
   return wrap;
 }
@@ -190,6 +213,14 @@ function render() {
   if (hideOwned.checked) {
     rows = rows.filter((r) => !OWNED_SOURCES.has(r.item.source));
   }
+  if (APPLE_ENABLED) {
+    if (el("hideOnApple").checked) {
+      rows = rows.filter((r) => r.item.apple !== "available");
+    }
+    if (el("hideNotApple").checked) {
+      rows = rows.filter((r) => r.item.apple === "available");
+    }
+  }
   rows.sort((x, y) => (y.score - x.score) || (y.fans - x.fans));
   rows = diversify(rows, maxPer, topN);
 
@@ -203,7 +234,17 @@ function render() {
 
 for (const c of Object.values(controls)) c.addEventListener("input", render);
 hideOwned.addEventListener("change", render);
-el("reset").addEventListener("click", (e) => { e.preventDefault(); applyDefaults(); render(); });
+if (APPLE_ENABLED) {
+  el("appleControls").style.display = "";
+  el("hideOnApple").addEventListener("change", render);
+  el("hideNotApple").addEventListener("change", render);
+}
+el("reset").addEventListener("click", (e) => {
+  e.preventDefault();
+  applyDefaults();
+  if (APPLE_ENABLED) { el("hideOnApple").checked = false; el("hideNotApple").checked = false; }
+  render();
+});
 
 applyDefaults();
 render();
