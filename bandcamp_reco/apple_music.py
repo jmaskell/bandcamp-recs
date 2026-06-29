@@ -137,7 +137,7 @@ def lookup_pool(pool, client, cache, country, reporter=NULL_REPORTER) -> dict:
     results: dict = {}
     with reporter.bar(len(pool), "Checking Apple Music") as bar:
         for item in pool:
-            bar.update()
+            bar.update()  # counts items reached (top of loop, before any early-exit)
             key = album_key_from_url(item["url"])
             cached = cache.get("apple_music", key)
             if cached is not None:

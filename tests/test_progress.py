@@ -16,7 +16,7 @@ def test_enabled_phase_writes_header_to_stderr(capsys):
     r = Reporter(enabled=True)
     r.phase("Crawling supporters")
     out, err = capsys.readouterr()
-    assert "Crawling supporters" in err
+    assert "→ Crawling supporters" in err
     assert out == ""   # progress never goes to stdout
 
 

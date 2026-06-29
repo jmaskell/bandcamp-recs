@@ -41,5 +41,5 @@ class Reporter:
 NULL_REPORTER = Reporter(enabled=False)
 
 
-def make_reporter(quiet):
+def make_reporter(quiet: bool) -> "Reporter":
     return Reporter(enabled=not quiet)

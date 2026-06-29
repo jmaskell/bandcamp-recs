@@ -23,5 +23,5 @@ def get_fan_collections(usernames, fetcher, cache, max_fans, max_albums_per_fan,
             except Exception:
                 continue
             result[username] = albums
-            bar.update()
+            bar.update()  # counts fans actually fetched (not every username considered)
     return result
