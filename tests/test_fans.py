@@ -1,6 +1,7 @@
 import bandcamp_reco.fans as fans
 from bandcamp_reco.models import Album
 from bandcamp_reco.fetch import CircuitBreakerTripped
+from bandcamp_reco.progress import Reporter
 
 
 def _album(url):
@@ -49,3 +50,15 @@ def test_get_fan_collections_stops_on_circuit_breaker(monkeypatch):
         max_fans=10, max_albums_per_fan=100,
     )
     assert set(result.keys()) == {"a"}
+
+
+def test_get_fan_collections_accepts_reporter(monkeypatch):
+    def fake_get_collection(username, fetcher, cache, max_items=None):
+        return [_album(f"https://x/{username}")]
+
+    monkeypatch.setattr(fans, "get_collection", fake_get_collection)
+    result = fans.get_fan_collections(
+        ["a", "b"], fetcher=None, cache=None,
+        max_fans=10, max_albums_per_fan=100, reporter=Reporter(enabled=True),
+    )
+    assert set(result.keys()) == {"a", "b"}
