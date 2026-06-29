@@ -155,3 +155,8 @@ def test_render_per_record_data_is_valid_json():
     end = html.index(";\n", start)
     data = json.loads(html[start:end].replace("<\\/", "</"))
     assert data["https://own/a"][0]["f"] == 3
+
+
+def test_render_defines_el_helper():
+    html = render_html(_pool(), username="u", defaults=DEFAULTS)
+    assert "const el = " in html   # the DOM helper every script call depends on

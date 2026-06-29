@@ -203,6 +203,7 @@ function selectRecord(key) {
   applyMode();
   render();
 }
+const el = (id) => document.getElementById(id);
 const controls = {
   cap: el("cap"), minf: el("minf"), src: el("src"), topn: el("topn"),
 };
