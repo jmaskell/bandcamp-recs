@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from .models import Album, album_key, album_source
+from .models import Album, album_key, album_source, album_key_from_url
 
 
 @dataclass
@@ -147,3 +147,30 @@ def per_record_pools(owned_keys, seed_supporters, fan_albums, get_tags=None,
         if items:
             result[seed_key] = items
     return result
+
+
+def normalize_per_record(per_record):
+    """Split per-record pools into a deduped album table and per-record refs.
+
+    Returns (albums, by_record):
+      albums:    {album_key: {title, artist, url, art, source, tags}}
+      by_record: {seed_key: [{"a": album_key, "h": hist, "f": fans}, ...]}
+
+    Each candidate album's metadata is stored once in `albums`; every record
+    references it by key with its own histogram and fan count, so a popular
+    album similar to many records is embedded only once."""
+    albums = {}
+    by_record = {}
+    for seed_key, items in per_record.items():
+        refs = []
+        for it in items:
+            k = album_key_from_url(it["url"])
+            if k not in albums:
+                albums[k] = {
+                    "title": it["title"], "artist": it["artist"],
+                    "url": it["url"], "art": it["art"],
+                    "source": it["source"], "tags": it["tags"],
+                }
+            refs.append({"a": k, "h": it["hist"], "f": it["fans"]})
+        by_record[seed_key] = refs
+    return albums, by_record

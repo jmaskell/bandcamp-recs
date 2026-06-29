@@ -1,6 +1,7 @@
 from bandcamp_reco.models import Album, album_key, album_source
 from bandcamp_reco.score import (
     score_candidates, candidate_pool, Recommendation, per_record_pools,
+    normalize_per_record,
 )
 
 
@@ -174,3 +175,29 @@ def test_per_record_pools_skips_unfetched_fans():
     seed_supporters = {"https://own/a": ["f1", "f2"]}
     pools = per_record_pools(owned, seed_supporters, fans, min_fans=1)
     assert {it["url"] for it in pools["https://own/a"]} == {"https://c.bandcamp.com/album/x"}
+
+
+def test_normalize_per_record_dedupes_albums():
+    per_record = {
+        "https://own/a": [
+            {"title": "X", "artist": "AX", "url": "https://c.bandcamp.com/album/x",
+             "art": "ax", "source": "c", "tags": ["house"],
+             "hist": {"1": 2}, "fans": 2},
+        ],
+        "https://own/b": [
+            {"title": "X", "artist": "AX", "url": "https://c.bandcamp.com/album/x",
+             "art": "ax", "source": "c", "tags": ["house"],
+             "hist": {"2": 1}, "fans": 1},
+        ],
+    }
+    albums, by_record = normalize_per_record(per_record)
+    # the shared album appears once, metadata only (no per-record fields)
+    assert list(albums) == ["https://c.bandcamp.com/album/x"]
+    assert albums["https://c.bandcamp.com/album/x"]["title"] == "X"
+    assert "hist" not in albums["https://c.bandcamp.com/album/x"]
+    assert "fans" not in albums["https://c.bandcamp.com/album/x"]
+    # each record references it with its own histogram + fan count
+    assert by_record["https://own/a"] == [
+        {"a": "https://c.bandcamp.com/album/x", "h": {"1": 2}, "f": 2}]
+    assert by_record["https://own/b"] == [
+        {"a": "https://c.bandcamp.com/album/x", "h": {"2": 1}, "f": 1}]
