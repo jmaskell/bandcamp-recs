@@ -66,9 +66,7 @@ The page has two views, switchable at the top:
   box to find a record, click it, and the same controls re-rank just that
   record's similar albums. Only records with enough supporter data are listed.
 
-This needs no extra run or network: it is built from the same fan data a full
-run already gathers. Tune `per_record_pool_size` / `per_record_min_fans` in
-`config.toml` to trade page size against depth.
+This needs no extra Bandcamp run: it is built from the same fan data a full run already gathers. When Apple Music is enabled, the first run checks iTunes availability for the per-record candidates as well, adding throttled lookups that are cached on later runs. Tune `per_record_pool_size` / `per_record_min_fans` in `config.toml` to trade page size against depth.
 
 ## Notes
 
