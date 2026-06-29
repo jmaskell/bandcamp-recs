@@ -1,5 +1,7 @@
 from bandcamp_reco.models import Album, album_key, album_source
-from bandcamp_reco.score import score_candidates, candidate_pool, Recommendation
+from bandcamp_reco.score import (
+    score_candidates, candidate_pool, Recommendation, per_record_pools,
+)
 
 
 def _album(url):
@@ -144,3 +146,31 @@ def test_candidate_pool_uses_tag_callback():
     pool = candidate_pool(OWNED, fans, get_tags=lambda u: ("house", "edits"),
                           min_fans=2)
     assert pool[0]["tags"] == ["house", "edits"]
+
+
+def test_per_record_pools_restricts_to_seed_fans():
+    owned = {"https://own/a", "https://own/b"}
+    fans = {
+        "f1": [_album("https://own/a"), _album("https://c.bandcamp.com/album/x")],
+        "f2": [_album("https://own/a"), _album("https://c.bandcamp.com/album/x")],
+        "f3": [_album("https://own/b"), _album("https://d.bandcamp.com/album/y")],
+    }
+    seed_supporters = {
+        "https://own/a": ["f1", "f2"],
+        "https://own/b": ["f3"],
+    }
+    pools = per_record_pools(owned, seed_supporters, fans, min_fans=2)
+    # record A: candidate x owned by both of A's fans -> present
+    assert set(pools["https://own/a"][0]["hist"]) == {"1"}
+    assert {it["url"] for it in pools["https://own/a"]} == {"https://c.bandcamp.com/album/x"}
+    # record B: only one fan, y owned by 1 < min_fans=2 -> empty pool -> omitted
+    assert "https://own/b" not in pools
+
+
+def test_per_record_pools_skips_unfetched_fans():
+    owned = {"https://own/a"}
+    fans = {"f1": [_album("https://own/a"), _album("https://c.bandcamp.com/album/x")]}
+    # f2 was never fetched (e.g. beyond max_fans); it must be ignored, not crash
+    seed_supporters = {"https://own/a": ["f1", "f2"]}
+    pools = per_record_pools(owned, seed_supporters, fans, min_fans=1)
+    assert {it["url"] for it in pools["https://own/a"]} == {"https://c.bandcamp.com/album/x"}

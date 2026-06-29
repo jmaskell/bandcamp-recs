@@ -128,3 +128,22 @@ def candidate_pool(owned_keys, fan_albums, get_tags=None, min_fans=2, pool_size=
         })
     items.sort(key=lambda d: d["fans"], reverse=True)
     return items[:pool_size]
+
+
+def per_record_pools(owned_keys, seed_supporters, fan_albums, get_tags=None,
+                     min_fans=2, pool_size=60):
+    """For each seed record (its album key -> the usernames who support it),
+    build the candidate pool from ONLY that record's fans, reusing
+    candidate_pool. Each fan is still weighted by their affinity against the
+    user's whole `owned_keys`. Records whose pool is empty are omitted.
+
+    Returns {seed_album_key: [pool item, ...]} (same item shape as
+    candidate_pool)."""
+    result = {}
+    for seed_key, usernames in seed_supporters.items():
+        sub_fans = {u: fan_albums[u] for u in usernames if u in fan_albums}
+        items = candidate_pool(owned_keys, sub_fans, get_tags=get_tags,
+                               min_fans=min_fans, pool_size=pool_size)
+        if items:
+            result[seed_key] = items
+    return result
