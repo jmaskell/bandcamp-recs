@@ -2,22 +2,22 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** For each recommended album, check whether it is on Apple Music, link to it when available, and let the page filter by availability — with a way to flag wrong matches for later debugging.
+**Goal:** For each recommended album, check whether it is on Apple Music (via the public iTunes Search API), link to it when available, and let the page filter by availability — with a way to flag wrong matches for later debugging.
 
-**Architecture:** A new `apple_music.py` module generates an Apple Music developer token, searches the catalog, and matches results to Bandcamp albums. After the candidate pool is built, `main.py` looks up the pool in parallel (cached in SQLite), annotates each pool item with an availability state, and the page renders links, two filter checkboxes, and a localStorage-backed flag/export UI. The whole feature is additive: with no credentials, the page is identical to today.
+**Architecture:** A new `apple_music.py` module searches the keyless iTunes Search API and matches results to Bandcamp albums. After the candidate pool is built, `main.py` looks it up — throttled (~3s/request) and resumable, caching each result in SQLite — annotates each pool item with an availability state, and the page renders links, two filter checkboxes, and a localStorage-backed flag/export UI. The whole feature is additive: with the feature disabled, the page is identical to today.
 
-**Tech Stack:** Python 3.11+, `requests`, `beautifulsoup4`, `PyJWT[crypto]` (new), stdlib `difflib`/`unicodedata`/`concurrent.futures`/`threading`, `pytest`.
+**Tech Stack:** Python 3.11+, `requests`, `beautifulsoup4`, stdlib `difflib`/`unicodedata`, `pytest`. No new dependency.
 
 ## Global Constraints
 
 - Python 3.11+ (the codebase already uses `tomllib`).
-- Only one new dependency: `PyJWT[crypto]`. Everything else is stdlib.
-- Apple Music credentials live **only** in `config.local.toml` (already gitignored). Never commit a real `.p8` key, Team ID, or Key ID.
-- Storefront defaults to `"gb"`.
+- **No new dependency** — the iTunes Search API is a plain `requests` GET.
+- Data source is the public iTunes Search API: `https://itunes.apple.com/search`, params `term`, `entity=album`, `media=music`, `country`, `limit=10`. No auth.
+- `country` defaults to `"gb"`; `request_delay` defaults to `3.0` seconds (the API allows ~20 requests/minute).
 - Matching is **precision-leaning**: similarity threshold `0.85`; when unsure, return `unavailable`, never guess.
-- Apple Music failures must **never** break a run — they degrade to the feature being off.
+- Apple Music failures must **never** break a run. Rate-limiting (HTTP 403/429) stops the Apple phase cleanly and resumes from cache next run.
 - All Apple Music UI is guarded by an `apple_enabled` flag so the page is byte-for-byte identical to today when the feature is off.
-- Cache namespace is `"apple_music"`, keyed by `album_key_from_url(item["url"])`. Only definitive results (`available`/`unavailable`) are cached; transient errors stay `unknown` and retry next run.
+- Cache namespace is `"apple_music"`, keyed by `album_key_from_url(item["url"])`. Only definitive results (`available`/`unavailable`) are cached; albums not reached stay `unknown` and are looked up on a later run.
 - Match existing test conventions: dict-backed `StubCache`, `FakeSession`/`FakeResponse`, `monkeypatch`, `tmp_path`.
 - Run tests with `python -m pytest`.
 
@@ -25,14 +25,13 @@
 
 ## File Structure
 
-- Create: `bandcamp_reco/apple_music.py` — token generation, catalog client, matching, parallel lookup orchestration.
+- Create: `bandcamp_reco/apple_music.py` — iTunes search client, matching, resumable lookup.
 - Modify: `bandcamp_reco/models.py` — add `album_key_from_url(url)` helper.
-- Modify: `bandcamp_reco/config.py` — `config.local.toml` overlay + `AppleMusicConfig`.
-- Modify: `bandcamp_reco/main.py` — parallel lookup phase, annotate pool, pass `apple_enabled` to render.
+- Modify: `bandcamp_reco/config.py` — parse `[apple_music]` into `AppleMusicConfig`.
+- Modify: `bandcamp_reco/main.py` — lookup phase, annotate pool, pass `apple_enabled` to render.
 - Modify: `bandcamp_reco/render.py` — Apple link, two filter checkboxes, flag/export UI, all guarded.
-- Modify: `requirements.txt` — add `PyJWT[crypto]`.
-- Modify: `config.toml` — commented `[apple_music]` example.
-- Modify: `README.md` — Apple Music setup section.
+- Modify: `config.toml` — `[apple_music]` block.
+- Modify: `README.md` — Apple Music section.
 - Create: `tests/test_apple_music.py`.
 - Modify: `tests/test_config.py`, `tests/test_models.py`, `tests/test_main.py`, `tests/test_render.py`.
 
@@ -40,7 +39,7 @@
 
 ## Task 1: Matching logic
 
-Pure functions: normalize strings, match Apple search results to a Bandcamp album. No network, no new dependency.
+Pure functions: normalize strings, match iTunes search results to a Bandcamp album. No network.
 
 **Files:**
 - Create: `bandcamp_reco/apple_music.py`
@@ -50,7 +49,7 @@ Pure functions: normalize strings, match Apple search results to a Bandcamp albu
 - Produces:
   - `AppleMatch` — `@dataclass(frozen=True)` with `status: str` (`"available"` | `"unavailable"`), `url: str | None`, `name: str | None`, `artist: str | None`.
   - `normalize(text: str) -> str`
-  - `match_album(artist: str, title: str, albums: list[dict]) -> AppleMatch` where each `album` dict has `album["attributes"]` containing `name`, `artistName`, `url`.
+  - `match_album(artist: str, title: str, results: list[dict]) -> AppleMatch` where each `result` dict has flat keys `collectionName`, `artistName`, `collectionViewUrl` (the iTunes Search API shape).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -60,8 +59,8 @@ Create `tests/test_apple_music.py`:
 from bandcamp_reco.apple_music import normalize, match_album, AppleMatch
 
 
-def _album(name, artist, url="https://music.apple.com/gb/album/x/1"):
-    return {"attributes": {"name": name, "artistName": artist, "url": url}}
+def _result(name, artist, url="https://music.apple.com/gb/album/x/1"):
+    return {"collectionName": name, "artistName": artist, "collectionViewUrl": url}
 
 
 def test_normalize_strips_brackets_diacritics_and_punctuation():
@@ -71,8 +70,8 @@ def test_normalize_strips_brackets_diacritics_and_punctuation():
 
 
 def test_match_album_exact_match_is_available():
-    albums = [_album("Album X", "Artist A")]
-    m = match_album("Artist A", "Album X", albums)
+    results = [_result("Album X", "Artist A")]
+    m = match_album("Artist A", "Album X", results)
     assert m.status == "available"
     assert m.url == "https://music.apple.com/gb/album/x/1"
     assert m.name == "Album X"
@@ -80,14 +79,13 @@ def test_match_album_exact_match_is_available():
 
 
 def test_match_album_deluxe_edition_still_matches():
-    albums = [_album("Album X (Deluxe Edition)", "Artist A")]
-    m = match_album("Artist A", "Album X", albums)
-    assert m.status == "available"
+    results = [_result("Album X (Deluxe Edition)", "Artist A")]
+    assert match_album("Artist A", "Album X", results).status == "available"
 
 
 def test_match_album_wrong_artist_is_unavailable():
-    albums = [_album("Album X", "Some Other Band")]
-    m = match_album("Artist A", "Album X", albums)
+    results = [_result("Album X", "Some Other Band")]
+    m = match_album("Artist A", "Album X", results)
     assert m.status == "unavailable"
     assert m.url is None
 
@@ -97,18 +95,17 @@ def test_match_album_no_results_is_unavailable():
 
 
 def test_match_album_compilation_matches_on_title_alone():
-    albums = [_album("Big Compilation", "Various Artists 2024 Reissue")]
-    m = match_album("Various Artists", "Big Compilation", albums)
+    results = [_result("Big Compilation", "Various Artists 2024 Reissue")]
+    m = match_album("Various Artists", "Big Compilation", results)
     assert m.status == "available"
 
 
 def test_match_album_picks_best_of_several():
-    albums = [
-        _album("Album X (Live)", "Artist A", "https://music.apple.com/gb/album/live/2"),
-        _album("Album X", "Artist A", "https://music.apple.com/gb/album/x/1"),
+    results = [
+        _result("Album X (Live)", "Artist A", "https://music.apple.com/gb/album/live/2"),
+        _result("Album X", "Artist A", "https://music.apple.com/gb/album/x/1"),
     ]
-    m = match_album("Artist A", "Album X", albums)
-    assert m.url == "https://music.apple.com/gb/album/x/1"
+    assert match_album("Artist A", "Album X", results).url == "https://music.apple.com/gb/album/x/1"
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -161,36 +158,35 @@ def _ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
-def match_album(artist: str, title: str, albums: list[dict]) -> AppleMatch:
+def match_album(artist: str, title: str, results: list[dict]) -> AppleMatch:
     want_artist = normalize(artist)
     want_title = normalize(title)
     is_comp = want_artist in _COMPILATION_ARTISTS
 
-    best_attrs = None
+    best = None
     best_score = 0.0
-    for album in albums:
-        attrs = album.get("attributes") or {}
-        title_score = _ratio(want_title, normalize(attrs.get("name", "")))
+    for r in results:
+        title_score = _ratio(want_title, normalize(r.get("collectionName", "")))
         if title_score < TITLE_THRESHOLD:
             continue
         if is_comp:
             artist_score = 0.0
         else:
-            artist_score = _ratio(want_artist, normalize(attrs.get("artistName", "")))
+            artist_score = _ratio(want_artist, normalize(r.get("artistName", "")))
             if artist_score < ARTIST_THRESHOLD:
                 continue
         combined = title_score + artist_score
         if combined > best_score:
             best_score = combined
-            best_attrs = attrs
+            best = r
 
-    if best_attrs is None:
+    if best is None:
         return AppleMatch(status="unavailable", url=None, name=None, artist=None)
     return AppleMatch(
         status="available",
-        url=best_attrs.get("url"),
-        name=best_attrs.get("name"),
-        artist=best_attrs.get("artistName"),
+        url=best.get("collectionViewUrl"),
+        name=best.get("collectionName"),
+        artist=best.get("artistName"),
     )
 ```
 
@@ -203,14 +199,14 @@ Expected: PASS (7 passed).
 
 ```bash
 git add bandcamp_reco/apple_music.py tests/test_apple_music.py
-git commit -m "feat: Apple Music album matching logic"
+git commit -m "feat: Apple Music (iTunes) album matching logic"
 ```
 
 ---
 
-## Task 2: Config overlay + AppleMusicConfig
+## Task 2: Config — AppleMusicConfig
 
-Wire up the `config.local.toml` overlay (currently gitignored but never read) and parse `[apple_music]` credentials into an optional `AppleMusicConfig`.
+Parse an `[apple_music]` table from `config.toml` into an optional `AppleMusicConfig`. No secrets, no overlay.
 
 **Files:**
 - Modify: `bandcamp_reco/config.py`
@@ -218,52 +214,57 @@ Wire up the `config.local.toml` overlay (currently gitignored but never read) an
 
 **Interfaces:**
 - Produces:
-  - `AppleMusicConfig` — `@dataclass` with `storefront: str`, `team_id: str`, `key_id: str`, `private_key_path: str`, `workers: int`.
+  - `AppleMusicConfig` — `@dataclass` with `enabled: bool`, `country: str`, `request_delay: float`.
   - `Config.apple_music: AppleMusicConfig | None` (defaults to `None`).
-  - `load_config(path=None)` now overlays `config.local.toml` onto `config.toml`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/test_config.py`:
-
-```python
-def test_apple_music_config_loaded_from_local_overlay(tmp_path):
-    (tmp_path / "config.toml").write_text('username = "me"\n')
-    (tmp_path / "config.local.toml").write_text(
-        "[apple_music]\n"
-        'team_id = "T123"\n'
-        'key_id = "K123"\n'
-        'private_key_path = "AuthKey_K123.p8"\n'
-    )
-    cfg = load_config(str(tmp_path / "config.toml"))
-    assert cfg.username == "me"
-    assert cfg.apple_music is not None
-    assert cfg.apple_music.team_id == "T123"
-    assert cfg.apple_music.key_id == "K123"
-    assert cfg.apple_music.private_key_path == "AuthKey_K123.p8"
-    assert cfg.apple_music.storefront == "gb"   # default
-    assert cfg.apple_music.workers == 12         # default
-
-
-def test_apple_music_config_absent_when_no_creds(tmp_path):
-    (tmp_path / "config.toml").write_text('username = "me"\n')
-    cfg = load_config(str(tmp_path / "config.toml"))
-    assert cfg.apple_music is None
-
-
-def test_apple_music_config_absent_when_partial_creds(tmp_path):
-    (tmp_path / "config.toml").write_text('username = "me"\n')
-    (tmp_path / "config.local.toml").write_text(
-        '[apple_music]\nteam_id = "T123"\n'  # missing key_id + private_key_path
-    )
-    cfg = load_config(str(tmp_path / "config.toml"))
-    assert cfg.apple_music is None
-```
-
-Also add `AppleMusicConfig` to the import line at the top of `tests/test_config.py`:
+Append to `tests/test_config.py`, and update the import line at the top to:
 
 ```python
 from bandcamp_reco.config import load_config, Config, AppleMusicConfig
+```
+
+Then add:
+
+```python
+def test_apple_music_config_parsed_from_section(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text(
+        'username = "me"\n'
+        "[apple_music]\n"
+        "enabled = true\n"
+        'country = "us"\n'
+        "request_delay = 2.0\n"
+    )
+    cfg = load_config(str(p))
+    assert cfg.username == "me"
+    assert cfg.apple_music is not None
+    assert cfg.apple_music.country == "us"
+    assert cfg.apple_music.request_delay == 2.0
+
+
+def test_apple_music_config_defaults(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('username = "me"\n[apple_music]\n')  # empty section
+    cfg = load_config(str(p))
+    assert cfg.apple_music is not None
+    assert cfg.apple_music.country == "gb"        # default
+    assert cfg.apple_music.request_delay == 3.0   # default
+
+
+def test_apple_music_config_absent_when_no_section(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('username = "me"\n')
+    cfg = load_config(str(p))
+    assert cfg.apple_music is None
+
+
+def test_apple_music_config_none_when_disabled(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('username = "me"\n[apple_music]\nenabled = false\n')
+    cfg = load_config(str(p))
+    assert cfg.apple_music is None
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -283,11 +284,9 @@ from dataclasses import dataclass
 
 @dataclass
 class AppleMusicConfig:
-    storefront: str
-    team_id: str
-    key_id: str
-    private_key_path: str
-    workers: int
+    enabled: bool
+    country: str
+    request_delay: float
 
 
 @dataclass
@@ -321,164 +320,47 @@ DEFAULTS = {
 }
 
 
-def _load_toml(path: str) -> dict:
-    with open(path, "rb") as f:
-        return tomllib.load(f)
-
-
-def _local_path(path: str) -> str:
-    directory, name = os.path.split(path)
-    stem, ext = os.path.splitext(name)
-    return os.path.join(directory, f"{stem}.local{ext}")
-
-
 def _parse_apple(section) -> AppleMusicConfig | None:
-    if not section:
-        return None
-    required = ("team_id", "key_id", "private_key_path")
-    if not all(section.get(k) for k in required):
+    # `section is None` means no [apple_music] table at all; an empty table
+    # parses to {} (falsy) but should still yield a default-enabled config.
+    if section is None or not section.get("enabled", True):
         return None
     return AppleMusicConfig(
-        storefront=section.get("storefront", "gb"),
-        team_id=section["team_id"],
-        key_id=section["key_id"],
-        private_key_path=section["private_key_path"],
-        workers=int(section.get("workers", 12)),
+        enabled=True,
+        country=section.get("country", "gb"),
+        request_delay=float(section.get("request_delay", 3.0)),
     )
 
 
 def load_config(path: str | None = None) -> Config:
-    path = path or "config.toml"
+    values = dict(DEFAULTS)
     raw: dict = {}
+    path = path or "config.toml"
     if os.path.exists(path):
-        raw.update(_load_toml(path))
-    local = _local_path(path)
-    if os.path.exists(local):
-        raw.update(_load_toml(local))
-    base = {k: raw.get(k, DEFAULTS[k]) for k in DEFAULTS}
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+        values.update(raw)
+    base = {k: values[k] for k in DEFAULTS}
     return Config(apple_music=_parse_apple(raw.get("apple_music")), **base)
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_config.py -v`
-Expected: PASS (existing 2 + new 3 = 5 passed).
+Expected: PASS (existing 2 + new 4 = 6 passed).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add bandcamp_reco/config.py tests/test_config.py
-git commit -m "feat: config.local.toml overlay + Apple Music credentials"
+git commit -m "feat: parse [apple_music] config section"
 ```
 
 ---
 
-## Task 3: Developer token
+## Task 3: iTunes Search client
 
-Sign an ES256 JWT developer token from the MusicKit key. Adds the `PyJWT[crypto]` dependency.
-
-**Files:**
-- Modify: `bandcamp_reco/apple_music.py`
-- Modify: `requirements.txt`
-- Test: `tests/test_apple_music.py`
-
-**Interfaces:**
-- Consumes: `AppleMusicConfig` (uses `.team_id`, `.key_id`, `.private_key_path`).
-- Produces: `developer_token(creds, *, now=None, ttl=43200) -> str`.
-
-- [ ] **Step 1: Add the dependency and install it**
-
-Edit `requirements.txt` to add a line:
-
-```
-PyJWT[crypto]>=2.8
-```
-
-Run: `python -m pip install -r requirements.txt`
-Expected: installs `PyJWT` and `cryptography`.
-
-- [ ] **Step 2: Write the failing test**
-
-Append to `tests/test_apple_music.py`:
-
-```python
-import jwt
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec
-
-from bandcamp_reco.apple_music import developer_token
-from bandcamp_reco.config import AppleMusicConfig
-
-
-def _make_key(tmp_path):
-    priv = ec.generate_private_key(ec.SECP256R1())
-    pem = priv.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    )
-    path = tmp_path / "AuthKey_K123.p8"
-    path.write_bytes(pem)
-    pub_pem = priv.public_key().public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-    return str(path), pub_pem
-
-
-def test_developer_token_has_es256_header_and_claims(tmp_path):
-    key_path, pub_pem = _make_key(tmp_path)
-    creds = AppleMusicConfig(storefront="gb", team_id="TEAM1", key_id="KEY1",
-                             private_key_path=key_path, workers=12)
-    token = developer_token(creds, now=1000, ttl=3600)
-    header = jwt.get_unverified_header(token)
-    assert header["alg"] == "ES256"
-    assert header["kid"] == "KEY1"
-    claims = jwt.decode(token, pub_pem, algorithms=["ES256"])
-    assert claims["iss"] == "TEAM1"
-    assert claims["iat"] == 1000
-    assert claims["exp"] == 4600
-```
-
-- [ ] **Step 3: Run the test to verify it fails**
-
-Run: `python -m pytest tests/test_apple_music.py::test_developer_token_has_es256_header_and_claims -v`
-Expected: FAIL with `ImportError: cannot import name 'developer_token'`.
-
-- [ ] **Step 4: Write the implementation**
-
-Add to `bandcamp_reco/apple_music.py` — add `import time` and `import jwt` to the imports at the top, then add this function:
-
-```python
-def developer_token(creds, *, now=None, ttl=43200) -> str:
-    issued = int(time.time() if now is None else now)
-    with open(creds.private_key_path, "r", encoding="utf-8") as f:
-        private_key = f.read()
-    return jwt.encode(
-        {"iss": creds.team_id, "iat": issued, "exp": issued + ttl},
-        private_key,
-        algorithm="ES256",
-        headers={"kid": creds.key_id},
-    )
-```
-
-- [ ] **Step 5: Run the test to verify it passes**
-
-Run: `python -m pytest tests/test_apple_music.py -v`
-Expected: PASS (all 8 passed).
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add bandcamp_reco/apple_music.py requirements.txt tests/test_apple_music.py
-git commit -m "feat: Apple Music developer token generation"
-```
-
----
-
-## Task 4: Apple Music catalog client
-
-A small client that calls the catalog search endpoint with the developer token, with its own throttle and 429 handling. Uses thread-local sessions so it is safe to share across worker threads.
+A small client that calls the iTunes Search API with its own throttle and turns rate-limiting (403/429) into a clean signal.
 
 **Files:**
 - Modify: `bandcamp_reco/apple_music.py`
@@ -487,8 +369,8 @@ A small client that calls the catalog search endpoint with the developer token, 
 **Interfaces:**
 - Produces:
   - `AppleRateLimited(Exception)`, `AppleSearchError(Exception)`.
-  - `AppleMusicClient(token, *, session=None, delay=0.05, jitter=0.05, max_retries=3, backoff_ceiling=10.0)`.
-  - `AppleMusicClient.search_album(artist, title, storefront) -> list[dict]` — the `results.albums.data` list (each dict has `attributes`), or `[]`.
+  - `AppleMusicClient(*, session=None, delay=3.0, jitter=0.3, max_retries=2, backoff_ceiling=10.0)`.
+  - `AppleMusicClient.search_album(artist, title, country) -> list[dict]` — the iTunes `results` list, or `[]`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -497,9 +379,7 @@ Append to `tests/test_apple_music.py`:
 ```python
 import pytest
 
-from bandcamp_reco.apple_music import (
-    AppleMusicClient, AppleRateLimited,
-)
+from bandcamp_reco.apple_music import AppleMusicClient, AppleRateLimited
 
 
 @pytest.fixture(autouse=True)
@@ -524,37 +404,39 @@ class FakeResp:
 class FakeSession:
     def __init__(self, responses):
         self._responses = list(responses)
-        self.last_kwargs = None
+        self.last_params = None
 
     def get(self, url, **kwargs):
-        self.last_kwargs = kwargs
+        self.last_params = kwargs.get("params")
         return self._responses.pop(0)
 
 
-def _albums_payload():
-    return {"results": {"albums": {"data": [
-        {"attributes": {"name": "Album X", "artistName": "Artist A",
-                        "url": "https://music.apple.com/gb/album/x/1"}}
-    ]}}}
+def _itunes_payload():
+    return {"resultCount": 1, "results": [
+        {"collectionName": "Album X", "artistName": "Artist A",
+         "collectionViewUrl": "https://music.apple.com/gb/album/x/1"}
+    ]}
 
 
-def test_search_album_returns_album_list_and_sends_auth():
-    sess = FakeSession([FakeResp(200, _albums_payload())])
-    client = AppleMusicClient("tok", session=sess)
-    albums = client.search_album("Artist A", "Album X", "gb")
-    assert albums[0]["attributes"]["name"] == "Album X"
-    assert sess.last_kwargs["headers"]["Authorization"] == "Bearer tok"
+def test_search_album_returns_results_and_sends_params():
+    sess = FakeSession([FakeResp(200, _itunes_payload())])
+    client = AppleMusicClient(session=sess)
+    results = client.search_album("Artist A", "Album X", "gb")
+    assert results[0]["collectionName"] == "Album X"
+    assert sess.last_params["entity"] == "album"
+    assert sess.last_params["country"] == "gb"
+    assert sess.last_params["term"] == "Artist A Album X"
 
 
-def test_search_album_empty_when_no_albums():
-    sess = FakeSession([FakeResp(200, {"results": {}})])
-    client = AppleMusicClient("tok", session=sess)
+def test_search_album_empty_when_no_results():
+    sess = FakeSession([FakeResp(200, {"resultCount": 0, "results": []})])
+    client = AppleMusicClient(session=sess)
     assert client.search_album("a", "b", "gb") == []
 
 
-def test_search_album_raises_on_persistent_429():
-    sess = FakeSession([FakeResp(429), FakeResp(429), FakeResp(429), FakeResp(429)])
-    client = AppleMusicClient("tok", session=sess, max_retries=3)
+def test_search_album_raises_on_403_rate_limit():
+    sess = FakeSession([FakeResp(403)])
+    client = AppleMusicClient(session=sess)
     with pytest.raises(AppleRateLimited):
         client.search_album("a", "b", "gb")
 ```
@@ -566,10 +448,10 @@ Expected: FAIL with `ImportError: cannot import name 'AppleMusicClient'`.
 
 - [ ] **Step 3: Write the implementation**
 
-Add to `bandcamp_reco/apple_music.py` — add `import random`, `import threading`, and `import requests` to the imports at the top, then add:
+Add to `bandcamp_reco/apple_music.py` — add `import time`, `import random`, and `import requests` to the imports at the top, then add:
 
 ```python
-SEARCH_URL = "https://api.music.apple.com/v1/catalog/{storefront}/search"
+SEARCH_URL = "https://itunes.apple.com/search"
 
 
 class AppleRateLimited(Exception):
@@ -581,24 +463,13 @@ class AppleSearchError(Exception):
 
 
 class AppleMusicClient:
-    def __init__(self, token, *, session=None, delay=0.05, jitter=0.05,
-                 max_retries=3, backoff_ceiling=10.0):
-        self._token = token
-        self._explicit_session = session
-        self._local = threading.local()
+    def __init__(self, *, session=None, delay=3.0, jitter=0.3,
+                 max_retries=2, backoff_ceiling=10.0):
+        self._session = session or requests.Session()
         self.delay = delay
         self.jitter = jitter
         self.max_retries = max_retries
         self.backoff_ceiling = backoff_ceiling
-
-    def _session(self):
-        if self._explicit_session is not None:
-            return self._explicit_session
-        s = getattr(self._local, "session", None)
-        if s is None:
-            s = requests.Session()
-            self._local.session = s
-        return s
 
     def _throttle(self):
         time.sleep(self.delay + random.uniform(0.0, self.jitter))
@@ -606,18 +477,14 @@ class AppleMusicClient:
     def _backoff(self, attempt):
         time.sleep(min(self.delay * (2 ** attempt), self.backoff_ceiling))
 
-    def search_album(self, artist, title, storefront) -> list[dict]:
-        url = SEARCH_URL.format(storefront=storefront)
-        params = {"term": f"{artist} {title}".strip(), "types": "albums", "limit": 10}
-        headers = {"Authorization": f"Bearer {self._token}"}
+    def search_album(self, artist, title, country) -> list[dict]:
+        params = {"term": f"{artist} {title}".strip(), "country": country,
+                  "media": "music", "entity": "album", "limit": 10}
         for attempt in range(self.max_retries + 1):
             self._throttle()
-            resp = self._session().get(url, params=params, headers=headers)
-            if resp.status_code == 429:
-                if attempt >= self.max_retries:
-                    raise AppleRateLimited()
-                self._backoff(attempt)
-                continue
+            resp = self._session.get(SEARCH_URL, params=params)
+            if resp.status_code in (403, 429):
+                raise AppleRateLimited()
             if 500 <= resp.status_code < 600:
                 if attempt >= self.max_retries:
                     raise AppleSearchError(f"server error {resp.status_code}")
@@ -625,27 +492,27 @@ class AppleMusicClient:
                 continue
             resp.raise_for_status()
             data = resp.json() or {}
-            return (((data.get("results") or {}).get("albums") or {}).get("data")) or []
+            return data.get("results") or []
         raise AppleSearchError("exhausted retries")
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_apple_music.py -v`
-Expected: PASS (all 11 passed).
+Expected: PASS (all 10 passed).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add bandcamp_reco/apple_music.py tests/test_apple_music.py
-git commit -m "feat: Apple Music catalog search client"
+git commit -m "feat: iTunes Search API client"
 ```
 
 ---
 
-## Task 5: Parallel lookup orchestration
+## Task 4: Throttled, resumable lookup
 
-Look up the candidate pool in parallel, skipping cached albums, writing results to the cache from the main thread, and stopping early on persistent rate-limiting.
+Walk the pool serially, skip cached albums, cache each result immediately, and stop cleanly on rate-limiting so a later run resumes from the cache.
 
 **Files:**
 - Modify: `bandcamp_reco/models.py`
@@ -653,10 +520,10 @@ Look up the candidate pool in parallel, skipping cached albums, writing results 
 - Test: `tests/test_models.py`, `tests/test_apple_music.py`
 
 **Interfaces:**
-- Consumes: `match_album` (Task 1), `AppleRateLimited` (Task 4), `AppleMatch` (Task 1).
+- Consumes: `match_album` (Task 1), `AppleRateLimited` (Task 3), `AppleMatch` (Task 1).
 - Produces:
   - `models.album_key_from_url(url: str) -> str`.
-  - `lookup_pool(pool, client, cache, storefront, workers=12) -> dict[str, AppleMatch]` — keyed by `album_key_from_url(item["url"])`. Each `pool` item is a dict with at least `url`, `artist`, `title`.
+  - `lookup_pool(pool, client, cache, country) -> dict[str, AppleMatch]` — keyed by `album_key_from_url(item["url"])`. Each `pool` item is a dict with at least `url`, `artist`, `title`.
 
 - [ ] **Step 1: Write the failing test for the models helper**
 
@@ -719,13 +586,16 @@ class StubCache:
 
 
 class FakeClient:
-    def __init__(self, mapping, errors=()):
-        self.mapping = mapping        # title -> list of Apple album dicts
-        self.errors = set(errors)     # titles that raise
+    def __init__(self, mapping, errors=(), rate_limit_on=None):
+        self.mapping = mapping            # title -> iTunes results list
+        self.errors = set(errors)         # titles that raise a generic error
+        self.rate_limit_on = rate_limit_on  # title that raises AppleRateLimited
         self.calls = []
 
-    def search_album(self, artist, title, storefront):
+    def search_album(self, artist, title, country):
         self.calls.append(title)
+        if title == self.rate_limit_on:
+            raise AppleRateLimited()
         if title in self.errors:
             raise RuntimeError("boom")
         return self.mapping.get(title, [])
@@ -735,16 +605,16 @@ def _item(url, title, artist="Artist A"):
     return {"url": url, "title": title, "artist": artist}
 
 
-def _apple_album(name, artist, url):
-    return {"attributes": {"name": name, "artistName": artist, "url": url}}
+def _itunes_result(name, artist, url):
+    return {"collectionName": name, "artistName": artist, "collectionViewUrl": url}
 
 
 def test_lookup_pool_matches_and_caches():
     pool = [_item("https://x.bandcamp.com/album/y", "Album X")]
     client = FakeClient({"Album X": [
-        _apple_album("Album X", "Artist A", "https://music.apple.com/gb/album/x/1")]})
+        _itunes_result("Album X", "Artist A", "https://music.apple.com/gb/album/x/1")]})
     cache = StubCache()
-    results = lookup_pool(pool, client, cache, "gb", workers=2)
+    results = lookup_pool(pool, client, cache, "gb")
     key = "https://x.bandcamp.com/album/y"
     assert results[key].status == "available"
     assert results[key].url == "https://music.apple.com/gb/album/x/1"
@@ -757,7 +627,7 @@ def test_lookup_pool_skips_cached_albums():
     cache.set("apple_music", "https://x.bandcamp.com/album/y",
               {"status": "unavailable", "url": None, "name": None, "artist": None})
     client = FakeClient({})
-    results = lookup_pool(pool, client, cache, "gb", workers=2)
+    results = lookup_pool(pool, client, cache, "gb")
     assert results["https://x.bandcamp.com/album/y"].status == "unavailable"
     assert client.calls == []  # cached -> no API call
 
@@ -766,9 +636,27 @@ def test_lookup_pool_error_is_unknown_and_not_cached():
     pool = [_item("https://x.bandcamp.com/album/y", "Boom")]
     client = FakeClient({}, errors={"Boom"})
     cache = StubCache()
-    results = lookup_pool(pool, client, cache, "gb", workers=2)
+    results = lookup_pool(pool, client, cache, "gb")
     assert "https://x.bandcamp.com/album/y" not in results  # unknown
     assert ("apple_music", "https://x.bandcamp.com/album/y") not in cache.store
+
+
+def test_lookup_pool_stops_on_rate_limit_and_leaves_rest_unknown():
+    pool = [
+        _item("https://x.bandcamp.com/album/a", "First"),
+        _item("https://x.bandcamp.com/album/b", "Limited"),
+        _item("https://x.bandcamp.com/album/c", "Third"),
+    ]
+    client = FakeClient(
+        {"First": [_itunes_result("First", "Artist A", "https://music.apple.com/gb/album/a/1")]},
+        rate_limit_on="Limited",
+    )
+    cache = StubCache()
+    results = lookup_pool(pool, client, cache, "gb")
+    assert results["https://x.bandcamp.com/album/a"].status == "available"  # done before limit
+    assert "https://x.bandcamp.com/album/b" not in results                  # the limited one
+    assert "https://x.bandcamp.com/album/c" not in results                  # never reached
+    assert client.calls == ["First", "Limited"]                            # stopped, did not call Third
 ```
 
 - [ ] **Step 6: Run them to verify they fail**
@@ -778,45 +666,24 @@ Expected: FAIL with `ImportError: cannot import name 'lookup_pool'`.
 
 - [ ] **Step 7: Write the implementation**
 
-Add to `bandcamp_reco/apple_music.py` — add `import dataclasses`, `from concurrent.futures import ThreadPoolExecutor, as_completed`, and `from .models import album_key_from_url` to the imports at the top, then add:
+Add to `bandcamp_reco/apple_music.py` — add `import dataclasses` and `from .models import album_key_from_url` to the imports at the top, then add:
 
 ```python
-def lookup_pool(pool, client, cache, storefront, workers=12) -> dict:
+def lookup_pool(pool, client, cache, country) -> dict:
     results: dict = {}
-    todo = []
     for item in pool:
         key = album_key_from_url(item["url"])
         cached = cache.get("apple_music", key)
         if cached is not None:
             results[key] = AppleMatch(**cached)
-        else:
-            todo.append((key, item))
-
-    stop = threading.Event()
-    new: dict = {}
-
-    def work(entry):
-        key, item = entry
-        if stop.is_set():
-            raise AppleRateLimited()
+            continue
         try:
-            albums = client.search_album(item["artist"], item["title"], storefront)
+            found = client.search_album(item["artist"], item["title"], country)
         except AppleRateLimited:
-            stop.set()
-            raise
-        return key, match_album(item["artist"], item["title"], albums)
-
-    if todo:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(work, entry) for entry in todo]
-            for future in as_completed(futures):
-                try:
-                    key, match = future.result()
-                except Exception:
-                    continue  # unknown: not cached, retried next run
-                new[key] = match
-
-    for key, match in new.items():
+            break  # stop cleanly; remaining albums stay unknown, resume next run
+        except Exception:
+            continue  # unknown: not cached, retried next run
+        match = match_album(item["artist"], item["title"], found)
         cache.set("apple_music", key, dataclasses.asdict(match))
         results[key] = match
     return results
@@ -825,30 +692,31 @@ def lookup_pool(pool, client, cache, storefront, workers=12) -> dict:
 - [ ] **Step 8: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_apple_music.py tests/test_models.py -v`
-Expected: PASS (all apple_music + models tests pass).
+Expected: PASS.
 
 - [ ] **Step 9: Commit**
 
 ```bash
 git add bandcamp_reco/apple_music.py bandcamp_reco/models.py tests/test_apple_music.py tests/test_models.py
-git commit -m "feat: parallel Apple Music pool lookup with caching"
+git commit -m "feat: throttled resumable Apple Music pool lookup"
 ```
 
 ---
 
-## Task 6: Wire the lookup into the pipeline
+## Task 5: Wire the lookup into the pipeline
 
-After the pool is built, run the Apple phase when credentials are present, annotate each pool item, and pass `apple_enabled` to the renderer. Apple failures never break the run.
+After the pool is built, run the Apple phase when enabled, annotate each pool item, and pass `apple_enabled` to the renderer. Apple failures never break the run.
 
 **Files:**
+- Modify: `bandcamp_reco/render.py` (signature only, Step 1)
 - Modify: `bandcamp_reco/main.py`
 - Test: `tests/test_main.py`
 
 **Interfaces:**
-- Consumes: `developer_token`, `AppleMusicClient`, `lookup_pool` (Tasks 3–5), `album_key_from_url` (Task 5), `Config.apple_music` (Task 2).
+- Consumes: `AppleMusicClient`, `lookup_pool` (Tasks 3–4), `album_key_from_url` (Task 4), `Config.apple_music` (Task 2).
 - Produces: pool items annotated with `apple` (`"available"`/`"unavailable"`/`"unknown"`) and, when available, `appleUrl`/`appleName`/`appleArtist`; calls `render_html(..., apple_enabled=<bool>)`.
 
-Note on ordering: `render_html` does not yet accept `apple_enabled`. Step 1 of this task adds that parameter and the `APPLE_ENABLED` JS const (a minimal signature + template change) so this task is testable on its own; Task 7 then builds the visible UI on top of the const.
+Note on ordering: `render_html` does not yet accept `apple_enabled`. Step 1 adds that parameter and the `APPLE_ENABLED` JS const (a minimal signature + template change) so this task is testable on its own; Task 6 then builds the visible UI on top of the const.
 
 - [ ] **Step 1: Add the `apple_enabled` parameter to render_html (signature only)**
 
@@ -866,7 +734,7 @@ def render_html(pool: list[dict], username: str, defaults: dict,
                 owned_sources=(), apple_enabled: bool = False) -> str:
 ```
 
-and add this line inside `render_html`, alongside the other `.replace(...)` calls in the returned expression — change:
+and change the end of the returned expression from:
 
 ```python
         .replace("__USERNAME_TEXT__", _html_escape(username))
@@ -881,7 +749,7 @@ to:
     )
 ```
 
-Then add the placeholder to the template's `<script>` block — directly under `const OWNED_SOURCES = new Set(__OWNED_SOURCES__);` add:
+Then, in the template's `<script>` block, directly under `const OWNED_SOURCES = new Set(__OWNED_SOURCES__);` add:
 
 ```javascript
 const APPLE_ENABLED = __APPLE_ENABLED__;
@@ -902,8 +770,7 @@ Then append the tests:
 ```python
 def _apple_cfg(tmp_path):
     return dataclasses.replace(_cfg(tmp_path), apple_music=AppleMusicConfig(
-        storefront="gb", team_id="T", key_id="K",
-        private_key_path="x.p8", workers=4))
+        enabled=True, country="gb", request_delay=0.0))
 
 
 def _base_stubs(monkeypatch, owned):
@@ -922,12 +789,11 @@ def _base_stubs(monkeypatch, owned):
                                       "supporter_usernames": []})())
 
 
-def test_run_annotates_apple_music_when_configured(tmp_path, monkeypatch):
+def test_run_annotates_apple_music_when_enabled(tmp_path, monkeypatch):
     _base_stubs(monkeypatch, [_album("https://own/1")])
-    monkeypatch.setattr(main_mod, "developer_token", lambda creds: "tok")
-    monkeypatch.setattr(main_mod, "AppleMusicClient", lambda token: object())
+    monkeypatch.setattr(main_mod, "AppleMusicClient", lambda **kw: object())
     monkeypatch.setattr(main_mod, "lookup_pool",
-                        lambda pool, client, cache, storefront, workers: {
+                        lambda pool, client, cache, country: {
                             "https://cand/x": AppleMatch(
                                 "available", "https://music.apple.com/gb/album/z/9",
                                 "X", "A")})
@@ -947,10 +813,10 @@ def test_run_without_apple_config_keeps_feature_off(tmp_path, monkeypatch):
 def test_run_survives_apple_failure(tmp_path, monkeypatch):
     _base_stubs(monkeypatch, [_album("https://own/1")])
 
-    def boom(creds):
-        raise RuntimeError("bad key")
-    monkeypatch.setattr(main_mod, "developer_token", boom)
-    # run must still complete and write the page with the feature off
+    def boom(pool, client, cache, country):
+        raise RuntimeError("network down")
+    monkeypatch.setattr(main_mod, "AppleMusicClient", lambda **kw: object())
+    monkeypatch.setattr(main_mod, "lookup_pool", boom)
     main_mod.run(_apple_cfg(tmp_path), fetcher=None, cache=None)
     html = (tmp_path / "out.html").read_text()
     assert "APPLE_ENABLED = false" in html
@@ -959,7 +825,7 @@ def test_run_survives_apple_failure(tmp_path, monkeypatch):
 - [ ] **Step 3: Run the tests to verify they fail**
 
 Run: `python -m pytest tests/test_main.py -v`
-Expected: FAIL — `developer_token`/`AppleMusicClient`/`lookup_pool` are not attributes of `main_mod` yet (and the page lacks `APPLE_ENABLED`).
+Expected: FAIL — `AppleMusicClient`/`lookup_pool` are not attributes of `main_mod` yet.
 
 - [ ] **Step 4: Write the implementation**
 
@@ -968,7 +834,7 @@ In `bandcamp_reco/main.py`, add to the imports at the top:
 ```python
 import sys
 
-from .apple_music import developer_token, AppleMusicClient, lookup_pool
+from .apple_music import AppleMusicClient, lookup_pool
 from .models import album_key, album_source, album_key_from_url
 ```
 
@@ -981,11 +847,8 @@ def _apply_apple_music(config, pool, cache) -> bool:
     if config.apple_music is None:
         return False
     try:
-        token = developer_token(config.apple_music)
-        client = AppleMusicClient(token)
-        results = lookup_pool(pool, client, cache,
-                              config.apple_music.storefront,
-                              workers=config.apple_music.workers)
+        client = AppleMusicClient(delay=config.apple_music.request_delay)
+        results = lookup_pool(pool, client, cache, config.apple_music.country)
     except Exception as exc:
         print(f"Apple Music: disabled ({exc})", file=sys.stderr)
         return False
@@ -1032,7 +895,7 @@ git commit -m "feat: wire Apple Music lookup into the pipeline"
 
 ---
 
-## Task 7: Page — Apple link + two filter checkboxes
+## Task 6: Page — Apple link + two filter checkboxes
 
 Render an Apple Music link per available album and add the two combining filter checkboxes, all guarded behind `APPLE_ENABLED`.
 
@@ -1041,7 +904,7 @@ Render an Apple Music link per available album and add the two combining filter 
 - Test: `tests/test_render.py`
 
 **Interfaces:**
-- Consumes: `render_html(..., apple_enabled=...)` and the `APPLE_ENABLED` JS const (Task 6 Step 1).
+- Consumes: `render_html(..., apple_enabled=...)` and the `APPLE_ENABLED` JS const (Task 5 Step 1).
 - Produces: page with `id="appleControls"`, `id="hideOnApple"`, `id="hideNotApple"`, and per-row Apple Music link.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1075,7 +938,7 @@ def test_render_apple_enabled_embeds_controls_and_data():
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `python -m pytest tests/test_render.py -v`
-Expected: FAIL — `id="hideOnApple"` not present (only the `APPLE_ENABLED` const exists from Task 6).
+Expected: FAIL — `id="hideOnApple"` not present.
 
 - [ ] **Step 3: Add the filter checkboxes markup**
 
@@ -1158,7 +1021,7 @@ add:
   }
 ```
 
-Then, near the bottom of the script where the listeners are wired (after `hideOwned.addEventListener("change", render);`), add:
+Then, after `hideOwned.addEventListener("change", render);`, add:
 
 ```javascript
 if (APPLE_ENABLED) {
@@ -1168,7 +1031,7 @@ if (APPLE_ENABLED) {
 }
 ```
 
-And in the `el("reset")` click handler, uncheck the Apple boxes — change:
+And change the reset handler from:
 
 ```javascript
 el("reset").addEventListener("click", (e) => { e.preventDefault(); applyDefaults(); render(); });
@@ -1199,7 +1062,7 @@ git commit -m "feat: Apple Music link + availability filter checkboxes"
 
 ---
 
-## Task 8: Page — flag / export UI
+## Task 7: Page — flag / export UI
 
 Add a per-row "flag" toggle that records wrong matches into `localStorage`, plus a bar to show the count, export to JSON, and clear. Guarded behind `APPLE_ENABLED`.
 
@@ -1208,10 +1071,10 @@ Add a per-row "flag" toggle that records wrong matches into `localStorage`, plus
 - Test: `tests/test_render.py`
 
 **Interfaces:**
-- Consumes: `APPLE_ENABLED`, per-row Apple data (Task 7).
+- Consumes: `APPLE_ENABLED`, per-row Apple data (Task 6).
 - Produces: page with `id="flagBar"` and an export that downloads `apple-music-flags.json`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 Append to `tests/test_render.py`:
 
@@ -1223,9 +1086,8 @@ def test_render_includes_flag_ui_when_apple_enabled():
     assert "apple-music-flags.json" in html
 
 
-def test_render_has_no_flag_ui_when_apple_disabled():
+def test_render_has_no_apple_flag_when_disabled():
     html = render_html(_pool(), username="u", defaults=DEFAULTS)
-    # the flag bar is hidden and the store is gated on APPLE_ENABLED
     assert "APPLE_ENABLED = false" in html
 ```
 
@@ -1248,7 +1110,7 @@ In the `_PAGE` template, immediately before `<div id="recs"></div>`, add:
 
 - [ ] **Step 4: Add the flag CSS**
 
-In the `<style>` block, after the `.apple` rules added in Task 7, add:
+In the `<style>` block, after the `.apple` rules added in Task 6, add:
 
 ```css
   .flag { background: none; border: none; cursor: pointer; color: #bbb;
@@ -1291,14 +1153,14 @@ function toggleFlag(item) {
 }
 ```
 
-In the `row(r, rank)` function, inside the `if (APPLE_ENABLED) { ... }` block added in Task 7, after the `meta.appendChild(apple);` line but still inside that block, append the flag button to the `apple` div before it is added to `meta`. Replace the Task 7 block's final two lines:
+In the `row(r, rank)` function, change the end of the `if (APPLE_ENABLED) { ... }` block added in Task 6 from:
 
 ```javascript
     meta.appendChild(apple);
   }
 ```
 
-with:
+to:
 
 ```javascript
     const flagged = !!loadFlags()[it.url];
@@ -1316,7 +1178,7 @@ with:
   }
 ```
 
-At the bottom of the script, inside the `if (APPLE_ENABLED) { ... }` block added in Task 7 (where `appleControls` is revealed), add the flag bar wiring:
+In the `if (APPLE_ENABLED) { ... }` block near the bottom (where `appleControls` is revealed), add the flag bar wiring:
 
 ```javascript
   el("flagBar").style.display = "";
@@ -1344,9 +1206,7 @@ At the bottom of the script, inside the `if (APPLE_ENABLED) { ... }` block added
 Run: `python -m pytest tests/test_render.py -v`
 Expected: PASS.
 
-- [ ] **Step 7: Manual smoke check (optional but recommended)**
-
-Run the existing test suite to confirm nothing regressed, then eyeball the page logic:
+- [ ] **Step 7: Run the full suite to confirm nothing regressed**
 
 Run: `python -m pytest -q`
 Expected: all tests pass.
@@ -1360,34 +1220,28 @@ git commit -m "feat: flag + export UI for wrong Apple Music matches"
 
 ---
 
-## Task 9: Documentation + config example
+## Task 8: Documentation + config block
 
-Document setup so the feature is usable: a commented `[apple_music]` block and a README section. No real credentials.
+Document setup and turn the feature on by default for this repo.
 
 **Files:**
 - Modify: `config.toml`
 - Modify: `README.md`
 
-- [ ] **Step 1: Add a commented example to config.toml**
+- [ ] **Step 1: Add the [apple_music] block to config.toml**
 
 At the end of `config.toml`, add:
 
 ```toml
 
 # --- Apple Music (optional) ---
-# To link recommendations to Apple Music and filter by availability, create a
-# MusicKit key in your Apple Developer account and put your credentials in
-# config.local.toml (gitignored) — NOT here. Example for config.local.toml:
-#
-#   [apple_music]
-#   storefront = "gb"                       # country storefront to check
-#   team_id = "ABCDE12345"                  # Apple Developer Team ID
-#   key_id = "ABCD123456"                   # MusicKit Key ID
-#   private_key_path = "AuthKey_ABCD123456.p8"   # path to your .p8 key file
-#   workers = 12                            # parallel lookups
-#
-# With no credentials the tool runs exactly as before (no Apple Music links
-# or filters).
+# Link recommendations to Apple Music and filter by availability, using the
+# free public iTunes Search API (no account or key needed). Set enabled = false
+# to turn it off and render the page exactly as before.
+[apple_music]
+enabled = true
+country = "gb"          # Apple storefront/country to check
+request_delay = 3.0     # seconds between lookups (the API allows ~20/min)
 ```
 
 - [ ] **Step 2: Add a README section**
@@ -1398,24 +1252,23 @@ In `README.md`, after the `## Config` section, add:
 ## Apple Music (optional)
 
 The page can show whether each album is on Apple Music, link to it, and filter
-by availability. This is off unless you provide credentials.
+by availability. It uses the free public iTunes Search API — no account or key
+needed. Configure it in `config.toml`:
 
-1. In your Apple Developer account, create a **MusicKit key** and download its
-   `.p8` private key. Note your **Team ID** and the **Key ID**.
-2. Put the `.p8` file somewhere local (it is secret — keep it out of git).
-3. Add an `[apple_music]` block to `config.local.toml` (gitignored):
+    [apple_music]
+    enabled = true
+    country = "gb"
+    request_delay = 3.0
 
-       [apple_music]
-       storefront = "gb"
-       team_id = "ABCDE12345"
-       key_id = "ABCD123456"
-       private_key_path = "AuthKey_ABCD123456.p8"
+On a run, each recommendation is checked against the iTunes catalog and cached,
+so re-runs are fast. The iTunes API allows only ~20 lookups/minute, so a first
+full run adds time and may be rate-limited partway through — that is fine: it
+stops cleanly and the next run resumes from the cache, just like the Bandcamp
+crawl.
 
-On the next run, each recommendation is checked against the Apple Music catalog
-(cached, so re-runs are fast). The page then shows an Apple Music link when
-available, two checkboxes to hide albums that are / are not on Apple Music, and
-a "flag" button to mark wrong matches — exportable as `apple-music-flags.json`
-for later debugging.
+The page then shows an Apple Music link when available, two checkboxes to hide
+albums that are / are not on Apple Music, and a "flag" button to mark wrong
+matches — exportable as `apple-music-flags.json` for later debugging.
 
 **Notes:** matching is deliberately strict (when unsure it reports "not on Apple
 Music"), and only albums are matched — something that exists on Apple only as a
@@ -1431,12 +1284,13 @@ Expected: all tests pass.
 
 ```bash
 git add config.toml README.md
-git commit -m "docs: Apple Music setup instructions"
+git commit -m "docs: Apple Music setup + enable by default"
 ```
 
 ---
 
 ## Self-Review Notes
 
-- **Spec coverage:** data source (Tasks 3–4), storefront config (Task 2), parallel cached lookup (Task 5), matching incl. compilations + albums-only (Task 1), tri-state data shape + cache namespace (Tasks 5–6), graceful degradation (Task 6), two filter checkboxes (Task 7), flag/export UI (Task 8), error handling incl. 429 early-stop (Tasks 4–6), config overlay (Task 2), docs (Task 9), tests in every task.
-- **Singles-as-albums** and **overrides feedback loop** are explicitly out of scope (Task 9 note / not implemented).
+- **Spec coverage:** data source / iTunes client (Task 3), country config (Task 2), throttled + resumable whole-pool lookup with per-album caching and rate-limit stop (Task 4), matching incl. compilations + albums-only (Task 1), tri-state data shape + cache namespace (Tasks 4–5), feature-off degradation (Tasks 2, 5), two filter checkboxes (Task 6), flag/export UI (Task 7), error handling incl. 403 rate-limit (Tasks 3–5), docs + enable-by-default (Task 8), tests in every task.
+- **No credentials / no PyJWT:** the feature is keyless; nothing to install or store.
+- **Out of scope:** singles-as-albums and the overrides feedback loop are explicitly not implemented.

@@ -6,66 +6,76 @@ For each recommended album, check whether it exists on Apple Music and, if so,
 link to it there. Add filters to show or hide albums by Apple Music
 availability, plus a way to flag wrong matches for later debugging.
 
-This is purely additive: a run with no Apple Music credentials behaves exactly
-as it does today.
+This is purely additive: a run with the feature disabled behaves exactly as it
+does today.
+
+## Revision note
+
+Originally specced against the **official Apple Music API** (developer token via
+a MusicKit key). That key turned out to be unavailable, so this design uses the
+**public iTunes Search API** instead — keyless, free, no credentials. The
+trade-off is a much stricter rate limit (~20 requests/minute), which is handled
+by throttling and resuming across runs rather than by parallelism.
 
 ## Decisions
 
-- **Data source:** the official Apple Music API catalog search
-  (`GET /v1/catalog/{storefront}/search?types=albums`), authenticated with a
-  developer token. Catalog reads need only the developer token — no user login
-  — which preserves the tool's login-free spirit.
-- **Storefront:** `gb` (UK), stored in config so it can be changed later.
+- **Data source:** the public **iTunes Search API**
+  (`GET https://itunes.apple.com/search?term=...&entity=album&country=gb`).
+  Keyless, no auth, no signup. A result's `collectionViewUrl` is the Apple Music
+  link.
+- **Country:** `gb` (UK), stored in config so it can be changed later.
 - **Filter UI:** two combining checkboxes — "Hide albums on Apple Music" and
   "Hide albums not on Apple Music".
-- **Credentials:** live in `config.local.toml` (already gitignored).
-- **Lookups run in parallel** over the candidate pool, cached in SQLite.
+- **Lookups are throttled and resumable**, not parallel: ~3s between requests to
+  stay under the rate limit; every result cached in SQLite; if the API starts
+  rate-limiting (HTTP 403), the Apple phase stops cleanly and resumes next run.
+- **Enabled via config** (`[apple_music]` in `config.toml`); with no such section,
+  or `enabled = false`, the feature is off and the page is unchanged.
 
 ## Architecture
 
 ```
 bandcamp_reco/
-  apple_music.py   NEW: token generation, client, catalog lookup, matching
-  config.py        extend: load config.local.toml overlay + Apple Music settings
-  main.py          extend: parallel lookup phase, annotate pool items
+  apple_music.py   NEW: iTunes search client, matching, resumable lookup
+  config.py        extend: parse [apple_music] settings
+  main.py          extend: lookup phase, annotate pool items
   score.py         unchanged shape; pool items gain "apple" fields in main
   render.py        extend: render link + two filter checkboxes + flag UI
 ```
 
 ### `apple_music.py`
 
-- `developer_token(creds)` — signs an ES256 JWT from the `.p8` key, Team ID and
-  Key ID, valid ~12h, generated once per run, reused (read-only string) across
-  worker threads. New dependency: `PyJWT[crypto]`.
-- `AppleMusicClient` — holds the token and a `requests` session;
-  `search_album(artist, title, storefront)` queries catalog search.
-- `lookup_pool(pool, creds, cache, storefront, workers)` — orchestration: read
-  cache on the main thread to find uncached albums, dispatch those through a
-  `ThreadPoolExecutor`, collect results, write them to the cache **from the main
-  thread**, and return a map of `album_key -> result`.
+- `AppleMusicClient` — holds a `requests` session and a throttle;
+  `search_album(artist, title, country)` queries the iTunes Search API and
+  returns the `results` list.
+- `lookup_pool(pool, client, cache, country)` — orchestration: walk the pool,
+  skip albums already in the cache, search + match each uncached album,
+  **cache each result immediately** (so partial progress survives), and stop
+  cleanly if the API rate-limits. Returns a map of `album_key -> AppleMatch`.
 - Matching helpers (normalization + confidence check) live here.
 
 ### Why a separate client, not the existing `Fetcher`
 
-The Bandcamp `Fetcher` uses a deliberately slow serial throttle (0.7s + jitter)
-because scraping Bandcamp too fast trips its rate limiter, and it carries a
-shared `_consecutive_429` counter that is not thread-safe. The Apple Music API
-is a separate, authenticated host with generous catalog-read limits that
-tolerate concurrency. So Apple lookups use their own client (own session, light
-throttle, own 429 backoff) and run concurrently.
+The iTunes Search API needs its own throttle (~3s vs the Bandcamp `Fetcher`'s
+0.7s) and treats rate-limiting differently — it returns HTTP **403** when you
+exceed ~20 requests/minute, which the Bandcamp `Fetcher` would treat as a fatal
+4xx. So Apple lookups use a dedicated client that turns 403 into a clean
+"stop and resume next run" signal.
 
 ## Performance
 
 - The pool is the right unit to check: capped at 400 albums, versus tens of
   thousands of raw fan albums. Lookups happen **after** the pool is built and
-  scored (the pool isn't known until then).
+  scored.
 - Every result is cached in SQLite, so it is a one-time cost; re-runs skip
   already-checked albums.
-- Cold run: ~400 lookups through a thread pool (8-16 workers) is roughly
-  10-30 seconds, versus ~5 minutes if run serially at the Bandcamp throttle.
-- Speculative mid-crawl overlap is intentionally **not** done: the pool isn't
-  known until scoring finishes, so it would waste API calls on albums that don't
-  qualify. Internal parallelism is the lever that matters.
+- The iTunes Search API allows ~20 requests/minute. At ~3s per request, a full
+  cold pool of ~400 albums takes ~15-20 minutes. This matches the tool's
+  existing behaviour: it already runs slowly, caches everything, and is designed
+  to be re-run. If the API rate-limits mid-run, the Apple phase stops cleanly and
+  the next run continues from the cache.
+- **No parallelism.** With a ~20/min limit, concurrent requests would trip the
+  limiter (403) and get throttled harder; serial throttling is correct here.
 
 ## Matching logic
 
@@ -75,25 +85,29 @@ Apple Music" list with albums that are actually there.
 
 Per album:
 
-1. **Normalize** both Bandcamp and Apple strings: lowercase, strip diacritics
+1. **Normalize** both Bandcamp and iTunes strings: lowercase, strip diacritics
    (NFKD), drop bracketed/parenthetical qualifiers (`(Deluxe Edition)`,
    `[2020 Remaster]`), drop trailing ` - EP` / ` - Single`, collapse
    punctuation and whitespace.
-2. **Query** catalog search with `types=albums`, `term = "<artist> <title>"`,
-   `limit=10`.
-3. **Confirm** against each returned album. Accept the best result where **both**
-   normalized artist **and** normalized title clear a similarity threshold:
-   exact normalized match, or `difflib.SequenceMatcher` ratio >= ~0.85 (stdlib,
-   no new dependency). First confident match wins -> `available` plus its
-   `music.apple.com` URL. No confident match -> `unavailable`.
+2. **Query** the iTunes Search API with `entity=album`, `country`,
+   `term = "<artist> <title>"`, `limit=10`.
+3. **Confirm** against each returned result (`collectionName`, `artistName`,
+   `collectionViewUrl`). Accept the best one where **both** normalized artist
+   **and** normalized title clear a similarity threshold: exact normalized
+   match, or `difflib.SequenceMatcher` ratio >= ~0.85 (stdlib, no new
+   dependency). First confident match wins -> `available` plus its
+   `collectionViewUrl`. No confident match -> `unavailable`.
 
 Edge cases:
 
 - **Compilations** (`Various Artists` / empty artist): accept on a strong title
   match alone, since the artist field will not line up.
-- **Singles posted as Bandcamp "albums":** v1 searches albums only. Something
-  that exists on Apple only as a single reads as unavailable. Known limitation,
-  not handled in v1.
+- **Singles posted as Bandcamp "albums":** v1 searches albums only
+  (`entity=album`). Something that exists on Apple only as a single reads as
+  unavailable. Known limitation, not handled in v1.
+- **Store presence vs streaming:** the iTunes Search API reflects the iTunes
+  Store catalog for a country, which closely tracks Apple Music availability but
+  is not a guarantee of streaming rights. Treated as a good-enough proxy.
 
 The threshold and normalization rules are constants in `apple_music.py` for easy
 tuning, and this is the most heavily unit-tested piece.
@@ -102,33 +116,30 @@ tuning, and this is the most heavily unit-tested piece.
 
 Per pool item, added in `main.py` after the lookup phase:
 
-- `apple`: `"available"` | `"unavailable"` | `"unknown"` (unknown = lookup
-  errored this run).
-- `appleUrl`: the `music.apple.com` link (only when available).
-- `appleName` / `appleArtist`: what Apple matched, for flag/debug context.
+- `apple`: `"available"` | `"unavailable"` | `"unknown"` (unknown = not yet
+  checked this run, e.g. the phase stopped on rate-limit before reaching it).
+- `appleUrl`: the Apple Music link (only when available).
+- `appleName` / `appleArtist`: what iTunes matched, for flag/debug context.
 
 Cache namespace `apple_music`, keyed by `album_key` (the same key the rest of the
 pipeline uses). Only definitive results (`available` / `unavailable`) are cached;
-transient errors stay `unknown` and retry next run.
+albums not reached stay `unknown` and are looked up on a later run.
 
 ## Config
 
-- Wire up the `config.local.toml` overlay: load `config.toml`, then overlay
-  `config.local.toml` if present. (It is gitignored today but never read.)
-- New `[apple_music]` table:
+Add an `[apple_music]` table to `config.toml` (no secrets, so it lives in the
+committed config):
 
-  ```toml
-  [apple_music]
-  storefront = "gb"
-  team_id = "ABCDE12345"
-  key_id = "ABCD123456"
-  private_key_path = "AuthKey_ABCD123456.p8"
-  workers = 12
-  ```
+```toml
+[apple_music]
+enabled = true
+country = "gb"
+request_delay = 3.0   # seconds between iTunes lookups (~20/min limit)
+```
 
-  Parsed into an optional `AppleMusicConfig`; `None` (feature off) when
-  credentials are absent.
-- `requirements.txt`: add `PyJWT[crypto]`.
+Parsed into an optional `AppleMusicConfig`; `None` (feature off) when the section
+is absent or `enabled = false`. No new dependency — the iTunes Search API is a
+plain `requests` GET.
 
 ## Page UI (`render.py`)
 
@@ -162,23 +173,23 @@ identical to today when the feature is off.
 
 Apple failures never break recommendations:
 
-- No/invalid credentials -> feature disabled, one-line stderr notice, page
-  renders as today.
-- Token signing failure -> caught, feature disabled, notice.
-- Per-album lookup error -> mark `unknown`, do not cache, continue (a dead
-  worker does not kill the pool).
-- Persistent Apple 429s -> back off, then stop the Apple phase early, mark the
-  rest `unknown`, and still render.
+- Feature off (no `[apple_music]` section or `enabled = false`) -> page renders
+  as today.
+- Per-album lookup error (network/parse) -> mark `unknown`, do not cache,
+  continue to the next album.
+- Rate-limited (HTTP 403/429) -> stop the Apple phase cleanly, leave the rest
+  `unknown`, still render, and resume from the cache on the next run.
 
 ## Testing
 
-- **Matching:** fixture-based unit tests (clean / deluxe / EP / various-artists /
-  no-result), no network.
-- **Token:** assert ES256 JWT header and claims (`kid`, `iss`, `iat`/`exp`)
-  using a throwaway test EC key; no real key committed.
+- **Matching:** fixture-based unit tests against iTunes-shaped results (clean /
+  deluxe / EP / various-artists / no-result), no network.
+- **Client:** `search_album` hits the iTunes endpoint with the right params and
+  returns the `results` list; 403 raises the rate-limit signal.
 - **`lookup_pool`:** injected fake client + in-memory cache -> cache-skip,
-  parallel collection, error -> `unknown`, writes happen on the main thread.
-- **Config:** overlay merge; `AppleMusicConfig` present/absent.
+  per-album caching, error -> `unknown`, rate-limit stops the phase with the
+  remainder left unknown.
+- **Config:** `[apple_music]` parsed; absent / `enabled = false` -> `None`.
 - **Render:** checkboxes / links / flag markup present when enabled, absent when
   not.
 
@@ -186,4 +197,4 @@ Apple failures never break recommendations:
 
 - Matching singles/tracks (albums only).
 - Feeding flagged corrections back into the run via an overrides file.
-- Storefronts other than the configured one (single storefront per run).
+- Countries other than the configured one (single country per run).
