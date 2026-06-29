@@ -1,7 +1,11 @@
 import re
+import random
+import time
 import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+
+import requests
 
 TITLE_THRESHOLD = 0.85
 ARTIST_THRESHOLD = 0.85
@@ -79,3 +83,48 @@ def match_album(artist: str, title: str, results: list[dict]) -> AppleMatch:
         name=best.get("collectionName"),
         artist=best.get("artistName"),
     )
+
+
+SEARCH_URL = "https://itunes.apple.com/search"
+
+
+class AppleRateLimited(Exception):
+    pass
+
+
+class AppleSearchError(Exception):
+    pass
+
+
+class AppleMusicClient:
+    def __init__(self, *, session=None, delay=3.0, jitter=0.3,
+                 max_retries=2, backoff_ceiling=10.0):
+        self._session = session or requests.Session()
+        self.delay = delay
+        self.jitter = jitter
+        self.max_retries = max_retries
+        self.backoff_ceiling = backoff_ceiling
+
+    def _throttle(self):
+        time.sleep(self.delay + random.uniform(0.0, self.jitter))
+
+    def _backoff(self, attempt):
+        time.sleep(min(self.delay * (2 ** attempt), self.backoff_ceiling))
+
+    def search_album(self, artist, title, country) -> list[dict]:
+        params = {"term": f"{artist} {title}".strip(), "country": country,
+                  "media": "music", "entity": "album", "limit": 10}
+        for attempt in range(self.max_retries + 1):
+            self._throttle()
+            resp = self._session.get(SEARCH_URL, params=params)
+            if resp.status_code in (403, 429):
+                raise AppleRateLimited()
+            if 500 <= resp.status_code < 600:
+                if attempt >= self.max_retries:
+                    raise AppleSearchError(f"server error {resp.status_code}")
+                self._backoff(attempt)
+                continue
+            resp.raise_for_status()
+            data = resp.json() or {}
+            return data.get("results") or []
+        raise AppleSearchError("exhausted retries")
