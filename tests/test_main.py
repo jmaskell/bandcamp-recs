@@ -1,9 +1,12 @@
+import dataclasses
+
 import requests
 
 import bandcamp_reco.main as main_mod
 import bandcamp_reco.fans as fans_mod
-from bandcamp_reco.config import Config
+from bandcamp_reco.config import Config, AppleMusicConfig
 from bandcamp_reco.models import Album
+from bandcamp_reco.apple_music import AppleMatch
 
 
 def _cfg(tmp_path):
@@ -138,3 +141,57 @@ def test_user_not_sampled_as_their_own_fan(tmp_path, monkeypatch):
     main_mod.run(cfg, fetcher=None, cache=None)
     # "me" is fetched once as the owner, never again as a sampled fan
     assert calls.count("me") == 1
+
+
+def _apple_cfg(tmp_path):
+    return dataclasses.replace(_cfg(tmp_path), apple_music=AppleMusicConfig(
+        enabled=True, country="gb", request_delay=0.0))
+
+
+def _base_stubs(monkeypatch, owned):
+    def fake_get_collection(username, fetcher, cache, max_items=None):
+        if username == "me":
+            return owned
+        return owned + [_album("https://cand/x")]
+    monkeypatch.setattr(main_mod, "get_collection", fake_get_collection)
+    monkeypatch.setattr(fans_mod, "get_collection", fake_get_collection)
+    # two supporters so the shared candidate reaches the pool (min_fans=2)
+    monkeypatch.setattr(main_mod, "get_supporters",
+                        lambda album, fetcher, cache, limit: ["fan1", "fan2"])
+    monkeypatch.setattr(main_mod, "get_album_page",
+                        lambda album, fetcher, cache: type(
+                            "I", (), {"tralbum_id": "1", "tags": (),
+                                      "supporter_usernames": []})())
+
+
+def test_run_annotates_apple_music_when_enabled(tmp_path, monkeypatch):
+    _base_stubs(monkeypatch, [_album("https://own/1")])
+    monkeypatch.setattr(main_mod, "AppleMusicClient", lambda **kw: object())
+    monkeypatch.setattr(main_mod, "lookup_pool",
+                        lambda pool, client, cache, country: {
+                            "https://cand/x": AppleMatch(
+                                "available", "https://music.apple.com/gb/album/z/9",
+                                "X", "A")})
+    main_mod.run(_apple_cfg(tmp_path), fetcher=None, cache=None)
+    html = (tmp_path / "out.html").read_text()
+    assert "APPLE_ENABLED = true" in html
+    assert "https://music.apple.com/gb/album/z/9" in html
+
+
+def test_run_without_apple_config_keeps_feature_off(tmp_path, monkeypatch):
+    _base_stubs(monkeypatch, [_album("https://own/1")])
+    main_mod.run(_cfg(tmp_path), fetcher=None, cache=None)
+    html = (tmp_path / "out.html").read_text()
+    assert "APPLE_ENABLED = false" in html
+
+
+def test_run_survives_apple_failure(tmp_path, monkeypatch):
+    _base_stubs(monkeypatch, [_album("https://own/1")])
+
+    def boom(pool, client, cache, country):
+        raise RuntimeError("network down")
+    monkeypatch.setattr(main_mod, "AppleMusicClient", lambda **kw: object())
+    monkeypatch.setattr(main_mod, "lookup_pool", boom)
+    main_mod.run(_apple_cfg(tmp_path), fetcher=None, cache=None)
+    html = (tmp_path / "out.html").read_text()
+    assert "APPLE_ENABLED = false" in html

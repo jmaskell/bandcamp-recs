@@ -77,6 +77,7 @@ own music from <span class="hint" id="ownedCount"></span></label>
 const POOL = __POOL__;
 const DEFAULTS = __DEFAULTS__;
 const OWNED_SOURCES = new Set(__OWNED_SOURCES__);
+const APPLE_ENABLED = __APPLE_ENABLED__;
 
 const el = (id) => document.getElementById(id);
 const controls = {
@@ -213,7 +214,7 @@ render();
 
 
 def render_html(pool: list[dict], username: str, defaults: dict,
-                owned_sources=()) -> str:
+                owned_sources=(), apple_enabled: bool = False) -> str:
     """Render the interactive recommendations page. `pool` is the candidate
     data from score.candidate_pool; the page re-ranks it client-side from the
     control values, seeded by `defaults`. `owned_sources` is the set of
@@ -228,6 +229,7 @@ def render_html(pool: list[dict], username: str, defaults: dict,
         .replace("__DEFAULTS__", embed(defaults))
         .replace("__OWNED_SOURCES__", embed(sorted(owned_sources)))
         .replace("__USERNAME_TEXT__", _html_escape(username))
+        .replace("__APPLE_ENABLED__", "true" if apple_enabled else "false")
     )
 
 

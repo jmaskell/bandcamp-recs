@@ -1,15 +1,40 @@
 import argparse
 import dataclasses
+import sys
 
+from .apple_music import AppleMusicClient, lookup_pool
 from .cache import Cache
 from .collection import get_collection
 from .config import load_config
 from .fans import get_fan_collections
 from .fetch import Fetcher, CircuitBreakerTripped
-from .models import album_key, album_source
+from .models import album_key, album_source, album_key_from_url
 from .render import render_html, write_html
 from .score import score_candidates, candidate_pool
 from .supporters import get_supporters, get_album_page, cached_tags
+
+
+def _apply_apple_music(config, pool, cache) -> bool:
+    if config.apple_music is None:
+        return False
+    try:
+        client = AppleMusicClient(delay=config.apple_music.request_delay)
+        results = lookup_pool(pool, client, cache, config.apple_music.country)
+    except Exception as exc:
+        print(f"Apple Music: disabled ({exc})", file=sys.stderr)
+        return False
+    for item in pool:
+        match = results.get(album_key_from_url(item["url"]))
+        if match is None:
+            item["apple"] = "unknown"
+        elif match.status == "available":
+            item["apple"] = "available"
+            item["appleUrl"] = match.url or ""
+            item["appleName"] = match.name or ""
+            item["appleArtist"] = match.artist or ""
+        else:
+            item["apple"] = "unavailable"
+    return True
 
 
 def run(config, fetcher, cache, limit=None):
@@ -71,8 +96,9 @@ def run(config, fetcher, cache, limit=None):
     # Labels/artists (Bandcamp sources) you already own music from, so the page
     # can offer to filter them out for pure discovery.
     owned_sources = sorted({album_source(a.url) for a in owned})
+    apple_enabled = _apply_apple_music(config, pool, cache)
     html = render_html(pool, username=config.username, defaults=defaults,
-                       owned_sources=owned_sources)
+                       owned_sources=owned_sources, apple_enabled=apple_enabled)
     write_html(html, config.output_path)
     return recs
 
