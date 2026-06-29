@@ -26,3 +26,12 @@ request_delay = 0.7
 
 cache_path = "cache.db"
 output_path = "recommendations.html"
+
+# --- Apple Music (optional) ---
+# Link recommendations to Apple Music and filter by availability, using the
+# free public iTunes Search API (no account or key needed). Set enabled = false
+# to turn it off and render the page exactly as before.
+[apple_music]
+enabled = true
+country = "gb"          # Apple storefront/country to check
+request_delay = 3.0     # seconds between lookups (the API allows ~20/min)

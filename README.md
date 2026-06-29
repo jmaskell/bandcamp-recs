@@ -21,6 +21,31 @@ Open `recommendations.html` in your browser when it finishes.
 
 Edit `config.toml` — your `username`, sampling caps, request delay, output path.
 
+## Apple Music (optional)
+
+The page can show whether each album is on Apple Music, link to it, and filter
+by availability. It uses the free public iTunes Search API — no account or key
+needed. Configure it in `config.toml`:
+
+    [apple_music]
+    enabled = true
+    country = "gb"
+    request_delay = 3.0
+
+On a run, each recommendation is checked against the iTunes catalog and cached,
+so re-runs are fast. The iTunes API allows only ~20 lookups/minute, so a first
+full run adds time and may be rate-limited partway through — that is fine: it
+stops cleanly and the next run resumes from the cache, just like the Bandcamp
+crawl.
+
+The page then shows an Apple Music link when available, two checkboxes to hide
+albums that are / are not on Apple Music, and a "flag" button to mark wrong
+matches — exportable as `apple-music-flags.json` for later debugging.
+
+**Notes:** matching is deliberately strict (when unsure it reports "not on Apple
+Music"), and only albums are matched — something that exists on Apple only as a
+single will read as unavailable.
+
 ## How it works
 
 1. Reads your collection from `bandcamp.com/<username>`.
