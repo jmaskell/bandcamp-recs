@@ -195,3 +195,14 @@ def test_run_survives_apple_failure(tmp_path, monkeypatch):
     main_mod.run(_apple_cfg(tmp_path), fetcher=None, cache=None)
     html = (tmp_path / "out.html").read_text()
     assert "APPLE_ENABLED = false" in html
+
+
+def test_run_embeds_per_record_data(tmp_path, monkeypatch):
+    _base_stubs(monkeypatch, [_album("https://own/1")])
+    main_mod.run(_cfg(tmp_path), fetcher=None, cache=None)
+    html = (tmp_path / "out.html").read_text()
+    # the seed record is pickable, and the per-record structures are embedded
+    assert "OWNED_RECORDS" in html
+    assert "BYRECORD" in html
+    assert "https://own/1" in html      # the seed record (in OWNED_RECORDS)
+    assert "https://cand/x" in html     # its similar album (in ALBUMS)

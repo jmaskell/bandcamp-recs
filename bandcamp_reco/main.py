@@ -10,7 +10,9 @@ from .fans import get_fan_collections
 from .fetch import Fetcher, CircuitBreakerTripped
 from .models import album_key, album_source, album_key_from_url
 from .render import render_html, write_html
-from .score import score_candidates, candidate_pool
+from .score import (
+    score_candidates, candidate_pool, per_record_pools, normalize_per_record,
+)
 from .supporters import get_supporters, get_album_page, cached_tags
 
 
@@ -49,22 +51,22 @@ def run(config, fetcher, cache, limit=None):
     # as recommendations.
     crawl_albums = owned if limit is None else owned[:limit]
 
-    # collect candidate supporters across the crawled owned albums
-    supporter_usernames = []
+    # Collect supporters per crawled owned album, keeping the link between each
+    # seed record and its supporters (the "by record" view needs it). You are a
+    # supporter of your own albums; never sample yourself as a fan (your
+    # collection is all owned, and would otherwise dominate the results).
+    seed_supporters: dict[str, list[str]] = {}
     for album in crawl_albums:
         try:
-            supporter_usernames.extend(
-                get_supporters(album, fetcher, cache,
-                               limit=config.supporters_per_album)
-            )
+            sup = get_supporters(album, fetcher, cache,
+                                 limit=config.supporters_per_album)
         except CircuitBreakerTripped:
             break
         except Exception:
             continue
+        seed_supporters[album_key(album)] = [u for u in sup if u != config.username]
 
-    # You are a supporter of your own albums; never sample yourself as a fan
-    # (your collection is all owned, and would otherwise dominate the results).
-    supporter_usernames = [u for u in supporter_usernames if u != config.username]
+    supporter_usernames = [u for seed in seed_supporters.values() for u in seed]
 
     fan_albums = get_fan_collections(
         supporter_usernames, fetcher, cache,
@@ -86,6 +88,22 @@ def run(config, fetcher, cache, limit=None):
         get_tags=lambda u: cached_tags(u, cache),
         min_fans=2, pool_size=400,
     )
+    # Per-record "by this one" data: each owned record's similar albums, built
+    # from only that record's fans, then normalized into a shared album table.
+    per_record = per_record_pools(
+        owned_keys, seed_supporters, fan_albums,
+        get_tags=lambda u: cached_tags(u, cache),
+        min_fans=config.per_record_min_fans,
+        pool_size=config.per_record_pool_size,
+    )
+    albums, by_record = normalize_per_record(per_record)
+    # Only records that produced at least one candidate are pickable.
+    owned_records = [
+        {"key": album_key(a), "title": a.title, "artist": a.artist,
+         "art": a.art_url or "", "url": a.url}
+        for a in owned if album_key(a) in by_record
+    ]
+
     defaults = {
         "affinity_cap": config.affinity_cap,
         "max_per_source": config.max_per_source,
@@ -96,9 +114,17 @@ def run(config, fetcher, cache, limit=None):
     # Labels/artists (Bandcamp sources) you already own music from, so the page
     # can offer to filter them out for pure discovery.
     owned_sources = sorted({album_source(a.url) for a in owned})
-    apple_enabled = _apply_apple_music(config, pool, cache)
-    html = render_html(pool, username=config.username, defaults=defaults,
-                       owned_sources=owned_sources, apple_enabled=apple_enabled)
+
+    # Enrich Apple Music once over the union of the global pool and every unique
+    # per-record album, so each album is looked up at most once (cached) and both
+    # views show the link. The album dicts are shared by reference, so mutating
+    # them here updates the embedded ALBUMS table too.
+    apple_enabled = _apply_apple_music(config, pool + list(albums.values()), cache)
+    html = render_html(
+        pool, username=config.username, defaults=defaults,
+        owned_sources=owned_sources, apple_enabled=apple_enabled,
+        owned_records=owned_records, albums=albums, by_record=by_record,
+    )
     write_html(html, config.output_path)
     return recs
 

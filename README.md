@@ -55,6 +55,21 @@ single will read as unavailable.
    damping for raw popularity.
 5. Renders the top results to `recommendations.html`.
 
+## Pick a record (similar records)
+
+The page has two views, switchable at the top:
+
+- **Whole collection** — the default: albums ranked by how much taste their
+  owners share with your entire collection.
+- **By record** — pick any one record from your collection and see albums its
+  fans also bought ("people who bought this also bought these"). Use the search
+  box to find a record, click it, and the same controls re-rank just that
+  record's similar albums. Only records with enough supporter data are listed.
+
+This needs no extra run or network: it is built from the same fan data a full
+run already gathers. Tune `per_record_pool_size` / `per_record_min_fans` in
+`config.toml` to trade page size against depth.
+
 ## Notes
 
 - Read-only and login-free — it only reads public pages.
