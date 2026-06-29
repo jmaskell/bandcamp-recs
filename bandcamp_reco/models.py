@@ -13,8 +13,12 @@ class Album:
     tags: tuple[str, ...] = ()
 
 
+def album_key_from_url(url: str) -> str:
+    return url.split("?")[0].rstrip("/")
+
+
 def album_key(album: "Album") -> str:
-    return album.url.split("?")[0].rstrip("/")
+    return album_key_from_url(album.url)
 
 
 def art_url_from_id(art_id) -> str | None:

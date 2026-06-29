@@ -18,3 +18,9 @@ def test_art_url_from_id_builds_bcbits_url():
 def test_art_url_from_id_none_when_missing():
     assert art_url_from_id(None) is None
     assert art_url_from_id("") is None
+
+
+def test_album_key_from_url_strips_query_and_trailing_slash():
+    from bandcamp_reco.models import album_key_from_url
+    assert (album_key_from_url("https://x.bandcamp.com/album/y/?from=1")
+            == "https://x.bandcamp.com/album/y")

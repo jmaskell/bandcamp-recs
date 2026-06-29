@@ -111,3 +111,91 @@ def test_search_album_raises_on_403_rate_limit():
     client = AppleMusicClient(session=sess)
     with pytest.raises(AppleRateLimited):
         client.search_album("a", "b", "gb")
+
+
+from bandcamp_reco.apple_music import lookup_pool, AppleMatch
+
+
+class StubCache:
+    def __init__(self):
+        self.store = {}
+
+    def get(self, ns, key):
+        return self.store.get((ns, key))
+
+    def set(self, ns, key, value):
+        self.store[(ns, key)] = value
+
+
+class FakeClient:
+    def __init__(self, mapping, errors=(), rate_limit_on=None):
+        self.mapping = mapping            # title -> iTunes results list
+        self.errors = set(errors)         # titles that raise a generic error
+        self.rate_limit_on = rate_limit_on  # title that raises AppleRateLimited
+        self.calls = []
+
+    def search_album(self, artist, title, country):
+        self.calls.append(title)
+        if title == self.rate_limit_on:
+            raise AppleRateLimited()
+        if title in self.errors:
+            raise RuntimeError("boom")
+        return self.mapping.get(title, [])
+
+
+def _item(url, title, artist="Artist A"):
+    return {"url": url, "title": title, "artist": artist}
+
+
+def _itunes_result(name, artist, url):
+    return {"collectionName": name, "artistName": artist, "collectionViewUrl": url}
+
+
+def test_lookup_pool_matches_and_caches():
+    pool = [_item("https://x.bandcamp.com/album/y", "Album X")]
+    client = FakeClient({"Album X": [
+        _itunes_result("Album X", "Artist A", "https://music.apple.com/gb/album/x/1")]})
+    cache = StubCache()
+    results = lookup_pool(pool, client, cache, "gb")
+    key = "https://x.bandcamp.com/album/y"
+    assert results[key].status == "available"
+    assert results[key].url == "https://music.apple.com/gb/album/x/1"
+    assert cache.store[("apple_music", key)]["status"] == "available"
+
+
+def test_lookup_pool_skips_cached_albums():
+    pool = [_item("https://x.bandcamp.com/album/y", "Album X")]
+    cache = StubCache()
+    cache.set("apple_music", "https://x.bandcamp.com/album/y",
+              {"status": "unavailable", "url": None, "name": None, "artist": None})
+    client = FakeClient({})
+    results = lookup_pool(pool, client, cache, "gb")
+    assert results["https://x.bandcamp.com/album/y"].status == "unavailable"
+    assert client.calls == []  # cached -> no API call
+
+
+def test_lookup_pool_error_is_unknown_and_not_cached():
+    pool = [_item("https://x.bandcamp.com/album/y", "Boom")]
+    client = FakeClient({}, errors={"Boom"})
+    cache = StubCache()
+    results = lookup_pool(pool, client, cache, "gb")
+    assert "https://x.bandcamp.com/album/y" not in results  # unknown
+    assert ("apple_music", "https://x.bandcamp.com/album/y") not in cache.store
+
+
+def test_lookup_pool_stops_on_rate_limit_and_leaves_rest_unknown():
+    pool = [
+        _item("https://x.bandcamp.com/album/a", "First"),
+        _item("https://x.bandcamp.com/album/b", "Limited"),
+        _item("https://x.bandcamp.com/album/c", "Third"),
+    ]
+    client = FakeClient(
+        {"First": [_itunes_result("First", "Artist A", "https://music.apple.com/gb/album/a/1")]},
+        rate_limit_on="Limited",
+    )
+    cache = StubCache()
+    results = lookup_pool(pool, client, cache, "gb")
+    assert results["https://x.bandcamp.com/album/a"].status == "available"  # done before limit
+    assert "https://x.bandcamp.com/album/b" not in results                  # the limited one
+    assert "https://x.bandcamp.com/album/c" not in results                  # never reached
+    assert client.calls == ["First", "Limited"]                            # stopped, did not call Third

@@ -2,10 +2,13 @@ import re
 import random
 import time
 import unicodedata
+import dataclasses
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 import requests
+
+from .models import album_key_from_url
 
 TITLE_THRESHOLD = 0.85
 ARTIST_THRESHOLD = 0.85
@@ -128,3 +131,23 @@ class AppleMusicClient:
             data = resp.json() or {}
             return data.get("results") or []
         raise AppleSearchError("exhausted retries")
+
+
+def lookup_pool(pool, client, cache, country) -> dict:
+    results: dict = {}
+    for item in pool:
+        key = album_key_from_url(item["url"])
+        cached = cache.get("apple_music", key)
+        if cached is not None:
+            results[key] = AppleMatch(**cached)
+            continue
+        try:
+            found = client.search_album(item["artist"], item["title"], country)
+        except AppleRateLimited:
+            break  # stop cleanly; remaining albums stay unknown, resume next run
+        except Exception:
+            continue  # unknown: not cached, retried next run
+        match = match_album(item["artist"], item["title"], found)
+        cache.set("apple_music", key, dataclasses.asdict(match))
+        results[key] = match
+    return results
