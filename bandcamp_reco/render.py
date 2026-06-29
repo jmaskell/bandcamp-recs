@@ -36,6 +36,9 @@ _PAGE = r"""<!DOCTYPE html>
   .apple { font-size: 0.8rem; margin-top: 0.25rem; }
   .apple a { color: #fa2d6c; }
   .apple .na { color: #bbb; }
+  .flag { background: none; border: none; cursor: pointer; color: #bbb;
+          font-size: 0.85rem; padding: 0; margin-left: 0.5rem; }
+  .flag.on { color: #fa2d6c; }
   a { color: #1a6; text-decoration: none; }
   a:hover { text-decoration: underline; }
   .reset { font-size: 0.8rem; }
@@ -77,6 +80,11 @@ own music from <span class="hint" id="ownedCount"></span></label>
 </div>
 
 <p class="count" id="count"></p>
+<div id="flagBar" style="display:none; font-size:0.85rem; color:#666; margin:0.5rem 0;">
+  <span id="flagCount">0 flagged</span>
+  &mdash; <a href="#" id="flagExport">Export</a>
+  &middot; <a href="#" id="flagClear">Clear</a>
+</div>
 <div id="recs"></div>
 <noscript><p>This page needs JavaScript to rank and display the recommendations.</p></noscript>
 
@@ -91,6 +99,35 @@ const controls = {
   cap: el("cap"), minf: el("minf"), src: el("src"), topn: el("topn"),
 };
 const hideOwned = el("hideOwned");
+
+const FLAG_KEY = "bandcampAppleFlags";
+
+function loadFlags() {
+  try { return JSON.parse(localStorage.getItem(FLAG_KEY)) || {}; }
+  catch (e) { return {}; }
+}
+function saveFlags(flags) {
+  localStorage.setItem(FLAG_KEY, JSON.stringify(flags));
+}
+function updateFlagCount() {
+  const n = Object.keys(loadFlags()).length;
+  el("flagCount").textContent = n + " flagged";
+}
+function toggleFlag(item) {
+  const flags = loadFlags();
+  if (flags[item.url]) {
+    delete flags[item.url];
+  } else {
+    flags[item.url] = {
+      title: item.title, artist: item.artist, url: item.url,
+      apple: item.apple || "unknown", appleUrl: item.appleUrl || "",
+      appleName: item.appleName || "", appleArtist: item.appleArtist || "",
+    };
+  }
+  saveFlags(flags);
+  updateFlagCount();
+  return !!flags[item.url];
+}
 
 function applyDefaults() {
   controls.cap.value = DEFAULTS.affinity_cap;
@@ -191,6 +228,17 @@ function row(r, rank) {
       na.className = "na"; na.textContent = "Not on Apple Music";
       apple.appendChild(na);
     }
+    const flagged = !!loadFlags()[it.url];
+    const fb = document.createElement("button");
+    fb.className = "flag" + (flagged ? " on" : "");
+    fb.textContent = flagged ? "⚑ flagged" : "⚐ flag";
+    fb.title = "Flag a wrong Apple Music match";
+    fb.addEventListener("click", () => {
+      const on = toggleFlag(it);
+      fb.className = "flag" + (on ? " on" : "");
+      fb.textContent = on ? "⚑ flagged" : "⚐ flag";
+    });
+    apple.appendChild(fb);
     meta.appendChild(apple);
   }
 
@@ -238,6 +286,24 @@ if (APPLE_ENABLED) {
   el("appleControls").style.display = "";
   el("hideOnApple").addEventListener("change", render);
   el("hideNotApple").addEventListener("change", render);
+  el("flagBar").style.display = "";
+  updateFlagCount();
+  el("flagExport").addEventListener("click", (e) => {
+    e.preventDefault();
+    const data = JSON.stringify(Object.values(loadFlags()), null, 2);
+    const blob = new Blob([data], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "apple-music-flags.json";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+  el("flagClear").addEventListener("click", (e) => {
+    e.preventDefault();
+    localStorage.removeItem(FLAG_KEY);
+    updateFlagCount();
+    render();
+  });
 }
 el("reset").addEventListener("click", (e) => {
   e.preventDefault();

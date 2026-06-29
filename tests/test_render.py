@@ -94,3 +94,15 @@ def test_render_apple_enabled_embeds_controls_and_data():
     assert 'id="hideOnApple"' in html
     assert 'id="hideNotApple"' in html
     assert "https://music.apple.com/gb/album/z/123" in html
+
+
+def test_render_includes_flag_ui_when_apple_enabled():
+    html = render_html(_apple_pool(), username="u", defaults=DEFAULTS,
+                       apple_enabled=True)
+    assert 'id="flagBar"' in html
+    assert "apple-music-flags.json" in html
+
+
+def test_render_has_no_apple_flag_when_disabled():
+    html = render_html(_pool(), username="u", defaults=DEFAULTS)
+    assert "APPLE_ENABLED = false" in html
