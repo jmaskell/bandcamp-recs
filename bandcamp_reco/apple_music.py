@@ -23,10 +23,11 @@ class AppleMatch:
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKD", text or "")
     text = "".join(c for c in text if not unicodedata.combining(c))
-    # Decompose ligatures that NFKD doesn't fully handle
-    text = text.replace('æ', 'ae')  # LATIN SMALL LETTER AE
-    text = text.replace('œ', 'oe')  # LATIN SMALL LIGATURE OE
     text = text.lower()
+    # Decompose ligatures that NFKD doesn't handle (after lowercasing so
+    # uppercase Æ/Œ are covered too)
+    text = text.replace("æ", "ae")  # LATIN SMALL LETTER AE
+    text = text.replace("œ", "oe")  # LATIN SMALL LIGATURE OE
     text = _BRACKETS.sub("", text)
     text = _SUFFIX.sub("", text)
     text = _NONALNUM.sub(" ", text)

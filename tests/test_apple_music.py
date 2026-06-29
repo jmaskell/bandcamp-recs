@@ -9,6 +9,8 @@ def test_normalize_strips_brackets_diacritics_and_punctuation():
     assert normalize("Sǽ (Deluxe Edition)") == "sae"
     assert normalize("Album - EP") == "album"
     assert normalize("A/B & C!") == "a b c"
+    assert normalize("ÆON") == "aeon"      # uppercase ligature
+    assert normalize("Œuvre") == "oeuvre"  # lowercase ligature mapping
 
 
 def test_match_album_exact_match_is_available():
