@@ -144,7 +144,9 @@ plain `requests` GET.
 ## Page UI (`render.py`)
 
 All Apple Music UI is guarded behind an `apple_enabled` flag so the page is
-identical to today when the feature is off.
+behaviorally and visually identical to today when the feature is off. (The
+guarded markup/CSS/JS still ship in the template but stay hidden and inert, so
+the raw bytes differ; nothing renders or runs.)
 
 - **Per row:** an "Apple Music" link when available (subtle, next to the
   Bandcamp link), plus a "flag" toggle.

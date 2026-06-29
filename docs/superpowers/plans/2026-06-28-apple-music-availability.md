@@ -16,7 +16,7 @@
 - `country` defaults to `"gb"`; `request_delay` defaults to `3.0` seconds (the API allows ~20 requests/minute).
 - Matching is **precision-leaning**: similarity threshold `0.85`; when unsure, return `unavailable`, never guess.
 - Apple Music failures must **never** break a run. Rate-limiting (HTTP 403/429) stops the Apple phase cleanly and resumes from cache next run.
-- All Apple Music UI is guarded by an `apple_enabled` flag so the page is byte-for-byte identical to today when the feature is off.
+- All Apple Music UI is guarded by an `apple_enabled` flag so the page is behaviorally/visually identical to today when the feature is off (the guarded markup/CSS/JS ship but stay hidden and inert; raw bytes differ, nothing renders or runs).
 - Cache namespace is `"apple_music"`, keyed by `album_key_from_url(item["url"])`. Only definitive results (`available`/`unavailable`) are cached; albums not reached stay `unknown` and are looked up on a later run.
 - Match existing test conventions: dict-backed `StubCache`, `FakeSession`/`FakeResponse`, `monkeypatch`, `tmp_path`.
 - Run tests with `python -m pytest`.
