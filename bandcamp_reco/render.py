@@ -42,12 +42,36 @@ _PAGE = r"""<!DOCTYPE html>
   a { color: #1a6; text-decoration: none; }
   a:hover { text-decoration: underline; }
   .reset { font-size: 0.8rem; }
+  .viewtabs { display: flex; gap: 0.5rem; margin: 1rem 0 0.5rem; }
+  .tab { background: #f3f3f3; border: 1px solid #e2e2e2; border-radius: 999px;
+         padding: 0.3rem 0.9rem; font: inherit; font-size: 0.85rem; color: #555; cursor: pointer; }
+  .tab.on { background: #1a6; border-color: #1a6; color: #fff; }
+  #recordSearch { width: 100%; box-sizing: border-box; padding: 0.5rem 0.7rem;
+                  border: 1px solid #ddd; border-radius: 8px; font: inherit; margin: 0.5rem 0; }
+  .rec.pick { cursor: pointer; }
+  .rec.pick:hover { background: #fafafa; }
+  #recordHeader { display: flex; gap: 1rem; align-items: center; margin: 1rem 0;
+                  padding: 0.75rem; background: #fafafa; border: 1px solid #eee; border-radius: 8px; }
+  #recordHeader img, #recordHeader .noart { width: 64px; height: 64px; }
+  .simlabel { color: #999; font-size: 0.75rem; }
 </style>
 </head>
 <body>
 <h1>Recommendations for __USERNAME_TEXT__</h1>
 <p class="intro">Albums you don't own, ranked by how much taste their owners share with you.
 Adjust the controls to re-rank instantly &mdash; <a href="#" class="reset" id="reset">reset</a>.</p>
+
+<div class="viewtabs" id="viewtabs" style="display:none">
+  <button class="tab on" id="tabAll" type="button">Whole collection</button>
+  <button class="tab" id="tabRecord" type="button">By record</button>
+</div>
+<div id="recordPicker" style="display:none">
+  <input type="text" id="recordSearch" placeholder="Search your collection&hellip;" autocomplete="off">
+  <p class="count" id="pickerCount"></p>
+  <div id="recordList"></div>
+</div>
+<div id="recordHeader" style="display:none"></div>
+<div id="results">
 
 <div class="controls">
   <div class="ctrl">
@@ -86,6 +110,7 @@ own music from <span class="hint" id="ownedCount"></span></label>
   &middot; <a href="#" id="flagClear">Clear</a>
 </div>
 <div id="recs"></div>
+</div>
 <noscript><p>This page needs JavaScript to rank and display the recommendations.</p></noscript>
 
 <script>
@@ -93,8 +118,91 @@ const POOL = __POOL__;
 const DEFAULTS = __DEFAULTS__;
 const OWNED_SOURCES = new Set(__OWNED_SOURCES__);
 const APPLE_ENABLED = __APPLE_ENABLED__;
+const OWNED_RECORDS = __OWNED_RECORDS__;
+const ALBUMS = __ALBUMS__;
+const BYRECORD = __BYRECORD__;
 
-const el = (id) => document.getElementById(id);
+let CURRENT = POOL;     // the pool the engine currently ranks
+let mode = "all";       // "all" | "record"
+let selectedKey = null; // selected owned-record key in "by record" mode
+
+function poolForRecord(key) {
+  return (BYRECORD[key] || []).map((ref) => {
+    const meta = ALBUMS[ref.a] || {};
+    return Object.assign({}, meta, { hist: ref.h, fans: ref.f });
+  });
+}
+
+function applyMode() {
+  const recordMode = mode === "record";
+  el("recordPicker").style.display = (recordMode && !selectedKey) ? "" : "none";
+  el("recordHeader").style.display = (recordMode && selectedKey) ? "" : "none";
+  el("results").style.display = (recordMode && !selectedKey) ? "none" : "";
+  el("tabAll").className = "tab" + (recordMode ? "" : " on");
+  el("tabRecord").className = "tab" + (recordMode ? " on" : "");
+}
+
+function renderRecordHeader(r) {
+  const h = el("recordHeader");
+  h.textContent = "";
+  if (r.art) {
+    const img = document.createElement("img");
+    img.src = r.art; img.alt = ""; img.loading = "lazy";
+    h.appendChild(img);
+  } else {
+    const ph = document.createElement("div"); ph.className = "noart"; h.appendChild(ph);
+  }
+  const meta = document.createElement("div"); meta.className = "meta";
+  const lab = document.createElement("div"); lab.className = "simlabel"; lab.textContent = "Similar to";
+  const title = document.createElement("div"); title.className = "title";
+  const a = document.createElement("a");
+  a.href = r.url; a.textContent = r.title; a.target = "_blank"; a.rel = "noopener";
+  title.appendChild(a);
+  const artist = document.createElement("div"); artist.className = "artist"; artist.textContent = r.artist;
+  const back = document.createElement("a");
+  back.href = "#"; back.className = "reset"; back.textContent = "← back to my records";
+  back.addEventListener("click", (e) => { e.preventDefault(); selectedKey = null; applyMode(); });
+  meta.appendChild(lab); meta.appendChild(title); meta.appendChild(artist); meta.appendChild(back);
+  h.appendChild(meta);
+}
+
+function renderPicker() {
+  const q = el("recordSearch").value.trim().toLowerCase();
+  const matches = OWNED_RECORDS.filter((r) =>
+    !q || r.title.toLowerCase().includes(q) || r.artist.toLowerCase().includes(q));
+  el("pickerCount").textContent =
+    OWNED_RECORDS.length + " of your records have enough data" +
+    (q ? " · " + matches.length + " match" : "");
+  const list = el("recordList");
+  list.textContent = "";
+  for (const r of matches) {
+    const wrap = document.createElement("div");
+    wrap.className = "rec pick";
+    if (r.art) {
+      const img = document.createElement("img");
+      img.src = r.art; img.alt = ""; img.loading = "lazy";
+      wrap.appendChild(img);
+    } else {
+      const ph = document.createElement("div"); ph.className = "noart"; wrap.appendChild(ph);
+    }
+    const meta = document.createElement("div"); meta.className = "meta";
+    const t = document.createElement("div"); t.className = "title"; t.textContent = r.title;
+    const ar = document.createElement("div"); ar.className = "artist"; ar.textContent = r.artist;
+    meta.appendChild(t); meta.appendChild(ar);
+    wrap.appendChild(meta);
+    wrap.addEventListener("click", () => selectRecord(r.key));
+    list.appendChild(wrap);
+  }
+}
+
+function selectRecord(key) {
+  selectedKey = key;
+  CURRENT = poolForRecord(key);
+  const r = OWNED_RECORDS.find((x) => x.key === key);
+  if (r) renderRecordHeader(r);
+  applyMode();
+  render();
+}
 const controls = {
   cap: el("cap"), minf: el("minf"), src: el("src"), topn: el("topn"),
 };
@@ -141,12 +249,14 @@ function applyDefaults() {
 
 function whyText(fans, typical) {
   const albWord = typical === 1 ? "album" : "albums";
-  const head = fans === 1 ? "1 fan who shares" : fans + " fans who each share";
+  const who = mode === "record" ? " of this record" : "";
+  const head = fans === 1 ? "1 fan" + who + " who shares"
+                          : fans + " fans" + who + " who each share";
   return "Owned by " + head + " ~" + typical + " " + albWord + " with your collection.";
 }
 
 function scored(cap) {
-  return POOL.map((item) => {
+  return CURRENT.map((item) => {
     let score = 0, fans = 0, sumShared = 0;
     for (const aff in item.hist) {
       const a = +aff, cnt = item.hist[aff];
@@ -277,7 +387,7 @@ function render() {
   const flags = APPLE_ENABLED ? loadFlags() : {};
   rows.forEach((r, i) => container.appendChild(row(r, i + 1, flags)));
 
-  el("count").textContent = rows.length + " of " + POOL.length +
+  el("count").textContent = rows.length + " of " + CURRENT.length +
     " candidate albums shown.";
 }
 
@@ -313,6 +423,17 @@ el("reset").addEventListener("click", (e) => {
   render();
 });
 
+if (OWNED_RECORDS.length) {
+  el("viewtabs").style.display = "";
+  el("tabAll").addEventListener("click", () => {
+    mode = "all"; selectedKey = null; CURRENT = POOL; applyMode(); render();
+  });
+  el("tabRecord").addEventListener("click", () => {
+    mode = "record"; renderPicker(); applyMode();
+  });
+  el("recordSearch").addEventListener("input", renderPicker);
+}
+
 applyDefaults();
 render();
 </script>
@@ -322,11 +443,16 @@ render();
 
 
 def render_html(pool: list[dict], username: str, defaults: dict,
-                owned_sources=(), apple_enabled: bool = False) -> str:
+                owned_sources=(), apple_enabled: bool = False,
+                owned_records=(), albums=None, by_record=None) -> str:
     """Render the interactive recommendations page. `pool` is the candidate
     data from score.candidate_pool; the page re-ranks it client-side from the
     control values, seeded by `defaults`. `owned_sources` is the set of
-    labels/artists the user already owns, for the "hide owned" filter."""
+    labels/artists the user already owns, for the "hide owned" filter.
+
+    `owned_records`, `albums`, and `by_record` power the "By record" view:
+    the user's pickable records, a deduped album-metadata table, and per-record
+    references into it. Omit them and the per-record UI stays hidden."""
     def embed(value) -> str:
         # JSON, made safe to sit inside a <script> tag (can't break out via </).
         return json.dumps(value).replace("</", "<\\/")
@@ -336,6 +462,9 @@ def render_html(pool: list[dict], username: str, defaults: dict,
         .replace("__POOL__", embed(pool))
         .replace("__DEFAULTS__", embed(defaults))
         .replace("__OWNED_SOURCES__", embed(sorted(owned_sources)))
+        .replace("__OWNED_RECORDS__", embed(list(owned_records)))
+        .replace("__ALBUMS__", embed(albums or {}))
+        .replace("__BYRECORD__", embed(by_record or {}))
         .replace("__USERNAME_TEXT__", _html_escape(username))
         .replace("__APPLE_ENABLED__", "true" if apple_enabled else "false")
     )

@@ -106,3 +106,52 @@ def test_render_includes_flag_ui_when_apple_enabled():
 def test_render_has_no_apple_flag_when_disabled():
     html = render_html(_pool(), username="u", defaults=DEFAULTS)
     assert "APPLE_ENABLED = false" in html
+
+
+def _owned_records():
+    return [{"key": "https://own/a", "title": "My Record", "artist": "Me",
+             "art": "", "url": "https://own/a"}]
+
+
+def _albums():
+    return {"https://c.bandcamp.com/album/x": {
+        "title": "Candidate", "artist": "CA",
+        "url": "https://c.bandcamp.com/album/x", "art": "",
+        "source": "c", "tags": ["house"]}}
+
+
+def _by_record():
+    return {"https://own/a": [
+        {"a": "https://c.bandcamp.com/album/x", "h": {"2": 3}, "f": 3}]}
+
+
+def test_render_embeds_per_record_view():
+    html = render_html(_pool(), username="u", defaults=DEFAULTS,
+                       owned_records=_owned_records(), albums=_albums(),
+                       by_record=_by_record())
+    assert "OWNED_RECORDS" in html
+    assert "ALBUMS" in html
+    assert "BYRECORD" in html
+    assert 'id="tabRecord"' in html          # the "By record" tab exists
+    assert 'id="recordPicker"' in html        # the collection picker exists
+    assert "My Record" in html                # the pickable record is embedded
+    assert "https://c.bandcamp.com/album/x" in html  # its similar album
+
+
+def test_render_per_record_absent_by_default():
+    html = render_html(_pool(), username="u", defaults=DEFAULTS)
+    # empty per-record data embeds as empty containers; the JS keeps the tab hidden
+    assert "const OWNED_RECORDS = [];" in html
+    assert "const ALBUMS = {};" in html
+    assert "const BYRECORD = {};" in html
+
+
+def test_render_per_record_data_is_valid_json():
+    html = render_html(_pool(), username="u", defaults=DEFAULTS,
+                       owned_records=_owned_records(), albums=_albums(),
+                       by_record=_by_record())
+    marker = "const BYRECORD = "
+    start = html.index(marker) + len(marker)
+    end = html.index(";\n", start)
+    data = json.loads(html[start:end].replace("<\\/", "</"))
+    assert data["https://own/a"][0]["f"] == 3
