@@ -1,6 +1,7 @@
 import pytest
 
 from bandcamp_reco.apple_music import normalize, match_album, AppleMatch, AppleMusicClient, AppleRateLimited, AppleSearchError
+from bandcamp_reco.progress import Reporter
 
 
 @pytest.fixture(autouse=True)
@@ -213,3 +214,12 @@ def test_lookup_pool_stops_on_rate_limit_and_leaves_rest_unknown():
     assert "https://x.bandcamp.com/album/b" not in results                  # the limited one
     assert "https://x.bandcamp.com/album/c" not in results                  # never reached
     assert client.calls == ["First", "Limited"]                            # stopped, did not call Third
+
+
+def test_lookup_pool_accepts_reporter():
+    pool = [_item("https://x.bandcamp.com/album/y", "Album X")]
+    client = FakeClient({"Album X": [
+        _itunes_result("Album X", "Artist A", "https://music.apple.com/gb/album/x/1")]})
+    cache = StubCache()
+    results = lookup_pool(pool, client, cache, "gb", reporter=Reporter(enabled=True))
+    assert results["https://x.bandcamp.com/album/y"].status == "available"

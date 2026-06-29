@@ -9,6 +9,7 @@ from difflib import SequenceMatcher
 import requests
 
 from .models import album_key_from_url
+from .progress import NULL_REPORTER
 
 TITLE_THRESHOLD = 0.85
 ARTIST_THRESHOLD = 0.85
@@ -132,21 +133,23 @@ class AppleMusicClient:
             return data.get("results") or []
 
 
-def lookup_pool(pool, client, cache, country) -> dict:
+def lookup_pool(pool, client, cache, country, reporter=NULL_REPORTER) -> dict:
     results: dict = {}
-    for item in pool:
-        key = album_key_from_url(item["url"])
-        cached = cache.get("apple_music", key)
-        if cached is not None:
-            results[key] = AppleMatch(**cached)
-            continue
-        try:
-            found = client.search_album(item["artist"], item["title"], country)
-        except AppleRateLimited:
-            break  # stop cleanly; remaining albums stay unknown, resume next run
-        except Exception:
-            continue  # unknown: not cached, retried next run
-        match = match_album(item["artist"], item["title"], found)
-        cache.set("apple_music", key, dataclasses.asdict(match))
-        results[key] = match
+    with reporter.bar(len(pool), "Checking Apple Music") as bar:
+        for item in pool:
+            bar.update()
+            key = album_key_from_url(item["url"])
+            cached = cache.get("apple_music", key)
+            if cached is not None:
+                results[key] = AppleMatch(**cached)
+                continue
+            try:
+                found = client.search_album(item["artist"], item["title"], country)
+            except AppleRateLimited:
+                break  # stop cleanly; remaining albums stay unknown, resume next run
+            except Exception:
+                continue  # unknown: not cached, retried next run
+            match = match_album(item["artist"], item["title"], found)
+            cache.set("apple_music", key, dataclasses.asdict(match))
+            results[key] = match
     return results
