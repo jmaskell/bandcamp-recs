@@ -41,6 +41,24 @@ def _apply_apple_music(config, pool, cache, reporter=NULL_REPORTER) -> bool:
     return True
 
 
+def round_robin(lists):
+    """Interleave lists column-major: every list's 0th item, then every list's
+    1st item, and so on, skipping lists that have run out. Spreads the fan-fetch
+    budget fairly across records instead of front-loading the earliest records'
+    supporters."""
+    result, i = [], 0
+    while True:
+        added = False
+        for lst in lists:
+            if i < len(lst):
+                result.append(lst[i])
+                added = True
+        if not added:
+            break
+        i += 1
+    return result
+
+
 def run(config, fetcher, cache, limit=None, reporter=NULL_REPORTER):
     reporter.phase("Reading your collection")
     try:
@@ -71,7 +89,7 @@ def run(config, fetcher, cache, limit=None, reporter=NULL_REPORTER):
             seed_supporters[album_key(album)] = [u for u in sup if u != config.username]
             bar.update()
 
-    supporter_usernames = [u for seed in seed_supporters.values() for u in seed]
+    supporter_usernames = round_robin(list(seed_supporters.values()))
 
     fan_albums = get_fan_collections(
         supporter_usernames, fetcher, cache,

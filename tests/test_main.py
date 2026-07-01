@@ -250,3 +250,31 @@ def test_main_default_passes_enabled_reporter(tmp_path, monkeypatch):
     _fake_pipeline_for_main(monkeypatch, tmp_path, captured)
     assert main_mod.main([]) == 0
     assert captured["reporter"].enabled is True
+
+
+def test_round_robin_even_lists():
+    assert main_mod.round_robin([[1, 2], [3, 4]]) == [1, 3, 2, 4]
+
+
+def test_round_robin_uneven_skips_exhausted():
+    assert main_mod.round_robin([[1, 2, 3], [4]]) == [1, 4, 2, 3]
+
+
+def test_round_robin_empty_sublists_and_input():
+    assert main_mod.round_robin([[], [1], []]) == [1]
+    assert main_mod.round_robin([]) == []
+    assert main_mod.round_robin([[1, 2, 3]]) == [1, 2, 3]
+
+
+def test_round_robin_fairness_reaches_every_list_under_tight_budget():
+    # With disjoint supporter lists, the first slice must already include BOTH
+    # records — not just the first (the whole point of the fix).
+    order = main_mod.round_robin([["a1", "a2", "a3"], ["b1", "b2", "b3"]])
+    assert order[:4] == ["a1", "b1", "a2", "b2"]
+
+
+def test_round_robin_preserves_all_elements():
+    lists = [[1, 2, 3], [4], [5, 6]]
+    out = main_mod.round_robin(lists)
+    assert len(out) == sum(len(l) for l in lists)
+    assert sorted(out) == sorted(x for l in lists for x in l)
